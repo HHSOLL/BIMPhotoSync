@@ -6,6 +6,7 @@ import {
   apiJson,
   authHeaders,
   GeneratedReport,
+  canAccessAdminBoards,
   isUpperManager,
   Project,
   readProjectId,
@@ -49,6 +50,10 @@ export default function ReportsPage() {
     if (!session) return;
     setToken(session.token);
     setUser(session.user);
+    if (!canAccessAdminBoards(session.user)) {
+      setStatus("보고서 보드는 관리자 계정에서만 사용할 수 있습니다.");
+      return;
+    }
     void loadProjects(session.token).catch((err) => setStatus(err.message));
   }, []);
 
@@ -150,6 +155,17 @@ export default function ReportsPage() {
         <h1 className="panel-title">로그인이 필요합니다</h1>
         <p className="muted">보고서는 프로젝트 권한 안에서만 조회됩니다.</p>
         <a className="button" href="/login">로그인으로 이동</a>
+      </section>
+    );
+  }
+
+  if (!canAccessAdminBoards(user)) {
+    return (
+      <section className="panel empty-state">
+        <KeyRound size={28} />
+        <h1 className="panel-title">관리자 권한이 필요합니다</h1>
+        <p className="muted">Reports 보드는 관리자 계정에서만 표시됩니다.</p>
+        <a className="button" href="/dashboard">Dashboard로 이동</a>
       </section>
     );
   }

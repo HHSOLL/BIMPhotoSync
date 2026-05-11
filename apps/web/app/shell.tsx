@@ -3,17 +3,17 @@
 import { Building2, FileText, Home, Images, Layers, LogIn, LogOut, MapPinned, Settings, ShieldCheck } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { clearSession, isSuperAdmin, readSession, type User } from "./client";
+import { canAccessAdminBoards, clearSession, isSuperAdmin, readSession, userInitials, type User } from "./client";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/projects", label: "Projects", icon: Building2 },
   { href: "/rooms", label: "Rooms", icon: MapPinned },
   { href: "/photos", label: "Photos", icon: Images },
-  { href: "/reports", label: "Reports", icon: FileText },
+  { href: "/reports", label: "Reports", icon: FileText, managerOnly: true },
   { href: "/viewer", label: "Floor Plan", icon: Layers },
   { href: "/sheets", label: "Sheets", icon: FileText },
-  { href: "/audit", label: "Audit", icon: ShieldCheck },
+  { href: "/audit", label: "Audit", icon: ShieldCheck, managerOnly: true },
   { href: "/mypage", label: "My Page", icon: Settings },
   { href: "/admin", label: "Admin", icon: ShieldCheck, superOnly: true }
 ];
@@ -25,7 +25,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const isAuthPage = pathname === "/login";
 
   useEffect(() => {
-    setUser(readSession()?.user ?? null);
+    const syncUser = () => setUser(readSession()?.user ?? null);
+    syncUser();
+    window.addEventListener("bps_session_changed", syncUser);
+    return () => window.removeEventListener("bps_session_changed", syncUser);
   }, [pathname]);
 
   if (isAuthPage) {
@@ -49,6 +52,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         <nav className="sidebar-nav" aria-label="Main navigation">
           {navItems
             .filter((item) => !item.superOnly || isSuperAdmin(user))
+            .filter((item) => !item.managerOnly || canAccessAdminBoards(user))
             .map((item) => {
               const Icon = item.icon;
               const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -65,6 +69,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           {user ? (
             <>
               <div className="sidebar-user" title={`${user.name} / ${roleLabel(user.role)} / ${user.company_name ?? ""}`}>
+                <span className="sidebar-avatar" aria-hidden="true">
+                  {user.avatar_url ? <img src={user.avatar_url} alt="" /> : userInitials(user.name)}
+                </span>
                 <strong>{user.name}</strong>
                 <span>{roleLabel(user.role)}</span>
                 <span>{user.company_name ?? "Company not loaded"}</span>

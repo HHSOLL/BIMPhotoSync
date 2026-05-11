@@ -16,7 +16,7 @@ import {
   Wand2
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { readSession } from "../client";
+import { apiJson, authHeaders, canAccessAdminBoards, Project, ProjectMember, readProjectId, readSession, saveProjectId, type User } from "../client";
 
 const logRows = [
   ["2026-03-07 14:30:25", "김작업 (Worker)", "A현장 신축공사", "생성", "Room 101 (욕실)", "Room 생성", "211.234.45.67"],
@@ -41,10 +41,49 @@ const recentLogins = [
 
 export default function AuditPage() {
   const [hasSession, setHasSession] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [selectedMemberId, setSelectedMemberId] = useState("");
+  const [status, setStatus] = useState("");
 
   useEffect(() => {
-    setHasSession(!!readSession());
+    const session = readSession();
+    setHasSession(!!session);
+    if (!session) return;
+    setUser(session.user);
+    setToken(session.token);
+    if (!canAccessAdminBoards(session.user)) return;
+    void loadProjects(session.token).catch((error) => setStatus(error instanceof Error ? error.message : "프로젝트 멤버 조회 실패"));
   }, []);
+
+  async function loadProjects(nextToken = token) {
+    const json = await apiJson<{ data: Project[] }>("/projects", { headers: authHeaders(nextToken) });
+    setProjects(json.data);
+    const stored = readProjectId();
+    const nextProjectId = json.data.some((project) => project.id === stored) ? stored : json.data[0]?.id ?? "";
+    setProjectId(nextProjectId);
+    if (nextProjectId) {
+      saveProjectId(nextProjectId);
+      await loadMembers(nextToken, nextProjectId);
+    }
+  }
+
+  async function loadMembers(nextToken = token, nextProjectId = projectId) {
+    if (!nextProjectId) return;
+    const json = await apiJson<{ data: ProjectMember[] }>(`/projects/${nextProjectId}/members`, { headers: authHeaders(nextToken) });
+    setMembers(json.data);
+    setSelectedMemberId(json.data[0]?.id ?? "");
+    setStatus(`${json.data.length}명의 프로젝트 참여자를 불러왔습니다.`);
+  }
+
+  function changeProject(nextProjectId: string) {
+    setProjectId(nextProjectId);
+    saveProjectId(nextProjectId);
+    void loadMembers(token, nextProjectId).catch((error) => setStatus(error instanceof Error ? error.message : "프로젝트 멤버 조회 실패"));
+  }
 
   if (!hasSession) {
     return (
@@ -56,6 +95,20 @@ export default function AuditPage() {
       </section>
     );
   }
+
+  if (!canAccessAdminBoards(user)) {
+    return (
+      <section className="panel empty-state">
+        <KeyRound size={28} />
+        <h1 className="panel-title">관리자 권한이 필요합니다</h1>
+        <p className="muted">Audit 보드는 관리자 계정에서만 표시됩니다.</p>
+        <a className="button" href="/dashboard">Dashboard로 이동</a>
+      </section>
+    );
+  }
+
+  const selectedMember = members.find((member) => member.id === selectedMemberId) ?? members[0];
+  const visibleLogRows = logRows.filter(([, , , action]) => action !== "로그인");
 
   return (
     <div className="reference-page">
@@ -69,8 +122,13 @@ export default function AuditPage() {
 
       <section className="filter-row audit-filter-row">
         <button className="input input-button" type="button"><CalendarDays size={16} />2026-03-01 ~ 2026-03-07</button>
-        <select className="input"><option>전체 프로젝트</option></select>
-        <select className="input"><option>전체 사용자</option></select>
+        <select className="input" value={projectId} onChange={(event) => changeProject(event.target.value)}>
+          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <select className="input" value={selectedMemberId} onChange={(event) => setSelectedMemberId(event.target.value)}>
+          <option value="">전체 사용자</option>
+          {members.map((member) => <option key={member.id} value={member.id}>{member.user.name}</option>)}
+        </select>
         <select className="input"><option>전체 작업</option></select>
         <select className="input"><option>전체 리소스</option></select>
         <label className="search-box">
@@ -85,7 +143,39 @@ export default function AuditPage() {
         <Metric icon={<UserPlus />} label="생성" value="342" sub="▲ 12.4%" tone="green" />
         <Metric icon={<Wand2 />} label="수정" value="512" sub="▲ 22.7%" tone="orange" />
         <Metric icon={<Trash2 />} label="삭제" value="83" sub="▼ 5.6%" tone="purple" />
-        <Metric icon={<LockKeyhole />} label="로그인" value="311" sub="▲ 8.3%" tone="sky" />
+        <Metric icon={<LockKeyhole />} label="조회" value="311" sub="▲ 8.3%" tone="sky" />
+      </section>
+
+      <section className="panel ref-card">
+        <div className="ref-panel-title">
+          <h2>프로젝트 참여자</h2>
+          <span className="muted">{status}</span>
+        </div>
+        <div className="member-audit-grid">
+          <div className="member-list">
+            {members.map((member) => (
+              <button
+                className={member.id === selectedMember?.id ? "member-row active" : "member-row"}
+                key={member.id}
+                type="button"
+                onClick={() => setSelectedMemberId(member.id)}
+              >
+                <strong>{member.user.name}</strong>
+                <span>{member.user.email}</span>
+                <em>{member.role}</em>
+              </button>
+            ))}
+            {members.length === 0 ? <p className="muted">현재 프로젝트 참여자가 없습니다.</p> : null}
+          </div>
+          <dl className="member-detail">
+            <div><dt>이름</dt><dd>{selectedMember?.user.name ?? "-"}</dd></div>
+            <div><dt>이메일</dt><dd>{selectedMember?.user.email ?? "-"}</dd></div>
+            <div><dt>회사</dt><dd>{selectedMember?.user.company_name ?? "-"}</dd></div>
+            <div><dt>전역 권한</dt><dd>{selectedMember?.user.role ?? "-"}</dd></div>
+            <div><dt>프로젝트 권한</dt><dd>{selectedMember?.role ?? "-"}</dd></div>
+            <div><dt>참여일</dt><dd>{selectedMember ? new Date(selectedMember.created_at).toLocaleString("ko-KR") : "-"}</dd></div>
+          </dl>
+        </div>
       </section>
 
       <section className="audit-layout">
@@ -106,7 +196,7 @@ export default function AuditPage() {
                 </tr>
               </thead>
               <tbody>
-                {logRows.map(([time, user, project, action, resource, detail, ip]) => (
+                {visibleLogRows.map(([time, user, project, action, resource, detail, ip]) => (
                   <tr key={`${time}-${resource}`}>
                     <td>{time}</td>
                     <td>{user}</td>

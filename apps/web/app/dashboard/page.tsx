@@ -2,7 +2,8 @@
 
 import { AlertCircle, BarChart3, Building2, Camera, CheckCircle2, FileText, Home, KeyRound, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { apiJson, authHeaders, readProjectId, readSession, saveProjectId } from "../client";
+import { apiJson, authHeaders, canAccessAdminBoards, readProjectId, readSession, saveProjectId, type User } from "../client";
+import { defaultTradeOptions, labelForOption } from "../photo-options";
 
 type DashboardProject = {
   id: string;
@@ -52,10 +53,12 @@ export default function DashboardPage() {
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [summary, setSummary] = useState<DashboardSummary["data"] | null>(null);
   const [status, setStatus] = useState("");
+  const [user, setUser] = useState<User | null>(null);
 
   useEffect(() => {
     const session = readSession();
     if (!session) return;
+    setUser(session.user);
     const storedProjectId = readProjectId();
     setToken(session.token);
     setSelectedProjectId(storedProjectId);
@@ -80,6 +83,7 @@ export default function DashboardPage() {
     if (!summary || !selectedProjectId) return "전체 프로젝트";
     return summary.projects.find((project) => project.id === selectedProjectId)?.name ?? "전체 프로젝트";
   }, [selectedProjectId, summary]);
+  const showAdminBoards = canAccessAdminBoards(user);
 
   if (!token) {
     return (
@@ -134,7 +138,7 @@ export default function DashboardPage() {
         <Metric icon={<Camera />} label="Photos" value={summary.totals.photos} sub="업로드 사진" tone="sky" />
         <Metric icon={<CheckCircle2 />} label="AI 분석 완료" value={summary.totals.analyzed_photos} sub="분석 내용 저장" tone="green" />
         <Metric icon={<AlertCircle />} label="이슈 사진" value={summary.totals.issue_photos} sub="BLOCKED 상태" tone="red" />
-        <Metric icon={<FileText />} label="Reports" value={summary.totals.reports} sub="생성 보고서" tone="orange" />
+        {showAdminBoards ? <Metric icon={<FileText />} label="Reports" value={summary.totals.reports} sub="생성 보고서" tone="orange" /> : null}
         <Metric icon={<Building2 />} label="Revit Models" value={summary.totals.revit_models} sub="연결 모델" tone="purple" />
       </section>
 
@@ -143,7 +147,7 @@ export default function DashboardPage() {
           <PanelTitle title="공종별 사진 분포" href="/photos" />
           <div className="trade-progress-list">
             {summary.trade_distribution.length > 0 ? (
-              summary.trade_distribution.map((row) => <DistributionRow key={row.trade} label={row.trade} count={row.count} total={summary.totals.photos} />)
+              summary.trade_distribution.map((row) => <DistributionRow key={row.trade} label={labelForOption(defaultTradeOptions, row.trade)} count={row.count} total={summary.totals.photos} />)
             ) : (
               <p className="muted">아직 업로드된 사진이 없습니다.</p>
             )}
@@ -205,7 +209,7 @@ export default function DashboardPage() {
           </div>
         </article>
 
-        <article className="panel ref-card">
+        {showAdminBoards ? <article className="panel ref-card">
           <PanelTitle title="최근 보고서" href="/reports" />
           <div className="report-list">
             {summary.recent_reports.map((report) => (
@@ -220,7 +224,7 @@ export default function DashboardPage() {
             ))}
             {summary.recent_reports.length === 0 ? <p className="muted">생성된 보고서가 없습니다.</p> : null}
           </div>
-        </article>
+        </article> : null}
 
         <article className="panel ref-card">
           <PanelTitle title="상태" />
