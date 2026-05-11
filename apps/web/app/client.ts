@@ -8,6 +8,7 @@ export type User = {
   email: string;
   name: string;
   role: string;
+  avatar_url?: string | null;
 };
 
 export const upperManagerRoles = ["SUPER_ADMIN", "COMPANY_ADMIN", "PROJECT_ADMIN", "BIM_MANAGER"] as const;
@@ -20,12 +21,32 @@ export function isUpperManager(user: User | null | undefined) {
   return !!user && upperManagerRoles.includes(user.role as (typeof upperManagerRoles)[number]);
 }
 
+export function canAccessAdminBoards(user: User | null | undefined) {
+  return isUpperManager(user);
+}
+
+export function userInitials(name: string) {
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join("");
+}
+
 export type Project = {
   id: string;
   company_id: string;
   name: string;
   code: string;
   member_role?: string | null;
+};
+
+export type ProjectMember = {
+  id: string;
+  role: string;
+  created_at: string;
+  user: Pick<User, "id" | "email" | "name" | "role" | "company_id" | "company_name" | "avatar_url">;
 };
 
 export type Room = {
@@ -213,12 +234,14 @@ export function readSession() {
 export function saveSession(token: string, user: User) {
   window.localStorage.setItem("bps_token", token);
   window.localStorage.setItem("bps_user", JSON.stringify(user));
+  window.dispatchEvent(new Event("bps_session_changed"));
 }
 
 export function clearSession() {
   window.localStorage.removeItem("bps_token");
   window.localStorage.removeItem("bps_user");
   window.localStorage.removeItem("bps_project_id");
+  window.dispatchEvent(new Event("bps_session_changed"));
 }
 
 export function readProjectId() {

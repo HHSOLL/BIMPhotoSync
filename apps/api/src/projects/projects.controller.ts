@@ -28,5 +28,10 @@ export class ProjectsController {
   createAccessKey(@CurrentUser() user: JwtUser, @Param("projectId") projectId: string) {
     return this.projects.createAccessKey(user, projectId);
   }
+
+  @Get(":projectId/members")
+  members(@CurrentUser() user: JwtUser, @Param("projectId") projectId: string) {
+    return this.projects.members(user, projectId);
+  }
 }
 

@@ -68,6 +68,31 @@ export class ProjectsService {
     return { data: { project_id: projectId, access_key: accessKey } };
   }
 
+  async members(user: ProjectActor, projectId: string) {
+    await this.assertProjectRole(user, projectId, ["MANAGER", "PROJECT_ADMIN", "BIM_MANAGER", "COMPANY_ADMIN", "SUPER_ADMIN"]);
+    const members = await this.prisma.projectMember.findMany({
+      where: { projectId },
+      include: { user: { include: { company: true } } },
+      orderBy: { createdAt: "desc" }
+    });
+    return {
+      data: members.map((member) => ({
+        id: member.id,
+        role: member.role,
+        created_at: member.createdAt,
+        user: {
+          id: member.user.id,
+          company_id: member.user.companyId,
+          company_name: member.user.company.name,
+          email: member.user.email,
+          name: member.user.name,
+          role: member.user.role,
+          avatar_url: null
+        }
+      }))
+    };
+  }
+
   async assertProjectAccess(userId: string, companyId: string, projectId: string) {
     const actor = await this.prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
     if (actor?.role === "SUPER_ADMIN") {

@@ -1,6 +1,10 @@
 export const WORK_SURFACES = [
   "FLOOR",
   "WALL",
+  "ENTRY_WALL",
+  "FRONT_WALL",
+  "RIGHT_WALL",
+  "LEFT_WALL",
   "CEILING",
   "WINDOW",
   "DOOR",

@@ -13,10 +13,21 @@ import {
   UploadCloud
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { apiJson, authHeaders, Photo, Project, readProjectId, readSession, Room, saveProjectId, User } from "../client";
+import { apiJson, authHeaders, canAccessAdminBoards, Photo, Project, readProjectId, readSession, Room, saveProjectId, User } from "../client";
+import {
+  apiTradeValue,
+  customTradeLabel,
+  customTradeValue,
+  defaultSurfaceOptions,
+  defaultTradeOptions,
+  labelForOption,
+  mergeCustomTradeOptions,
+  readCustomTradeOptions,
+  saveCustomTradeOptions,
+  type PhotoOption
+} from "../photo-options";
 
-const trades = ["WATERPROOF", "TILE", "PAINT", "ELECTRIC", "MEP", "WINDOW", "CONCRETE", "OTHER"];
-const surfaces = ["FLOOR", "WALL", "CEILING", "WINDOW", "DOOR", "PIPE", "ELECTRIC", "OTHER"];
+type PhotoTab = "list" | "upload";
 
 type ProjectList = { data: Project[] };
 type RoomList = { data: Room[] };
@@ -38,6 +49,9 @@ export default function PhotosPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [activeTab, setActiveTab] = useState<PhotoTab>("list");
+  const [customTrades, setCustomTrades] = useState<PhotoOption[]>([]);
+  const [newTradeLabel, setNewTradeLabel] = useState("");
   const [uploadMeta, setUploadMeta] = useState({
     work_surface: "FLOOR",
     trade: "WATERPROOF",
@@ -52,6 +66,7 @@ export default function PhotosPage() {
     if (!session) return;
     setToken(session.token);
     setUser(session.user);
+    setCustomTrades(readCustomTradeOptions());
     setUploadMeta((current) => ({ ...current, worker_name: session.user.name }));
     const params = new URLSearchParams(window.location.search);
     const storedProjectId = params.get("project_id") ?? readProjectId();
@@ -101,7 +116,7 @@ export default function PhotosPage() {
     }
     const params = new URLSearchParams({ project_id: nextProjectId });
     if (nextRoomId) params.set("room_id", nextRoomId);
-    if (nextFilters.trade) params.set("trade", nextFilters.trade);
+    if (nextFilters.trade) params.set("trade", apiTradeValue(nextFilters.trade));
     if (nextFilters.surface) params.set("work_surface", nextFilters.surface);
     if (nextFilters.from) params.set("date_from", nextFilters.from);
     if (nextFilters.to) params.set("date_to", nextFilters.to);
@@ -166,6 +181,10 @@ export default function PhotosPage() {
       body: file
     });
     if (!putRes.ok) throw new Error(`Object upload failed: ${putRes.status}`);
+    const selectedCustomTrade = customTradeLabel(uploadMeta.trade);
+    const descriptionWithCustomTrade = selectedCustomTrade
+      ? `[공종: ${selectedCustomTrade}] ${uploadMeta.description}`.trim()
+      : uploadMeta.description;
     await apiJson<CommitResult>("/photos", {
       method: "POST",
       headers: { ...authHeaders(token), "Content-Type": "application/json" },
@@ -174,6 +193,8 @@ export default function PhotosPage() {
         room_id: roomId,
         upload_id: presign.data.upload_id,
         ...uploadMeta,
+        trade: apiTradeValue(uploadMeta.trade),
+        description: descriptionWithCustomTrade,
         worker_name: uploadMeta.worker_name || user?.name || undefined
       })
     });
@@ -187,6 +208,30 @@ export default function PhotosPage() {
     [photos, selectedId]
   );
   const selectedRoom = rooms.find((room) => room.id === roomId);
+  const tradeOptions = mergeCustomTradeOptions(customTrades);
+  const canManageFilters = canAccessAdminBoards(user);
+
+  function addCustomTrade() {
+    const label = newTradeLabel.trim();
+    if (!label) return;
+    const option = { value: customTradeValue(label), label };
+    if (tradeOptions.some((trade) => trade.label === label || trade.value === option.value)) {
+      setNewTradeLabel("");
+      return;
+    }
+    const next = [...customTrades, option];
+    setCustomTrades(next);
+    saveCustomTradeOptions(next);
+    setNewTradeLabel("");
+    setStatus("공종 분류를 추가했습니다. 사용자 지정 공종은 API에는 기타(OTHER)로 저장되고 메모에 원 공종명이 함께 기록됩니다.");
+  }
+
+  function removeCustomTrade(value: string) {
+    const next = customTrades.filter((trade) => trade.value !== value);
+    setCustomTrades(next);
+    saveCustomTradeOptions(next);
+    if (uploadMeta.trade === value) setUploadMeta((current) => ({ ...current, trade: "OTHER" }));
+  }
 
   if (!token) {
     return (
@@ -214,8 +259,16 @@ export default function PhotosPage() {
       </div>
 
       <section className="panel">
+        <div className="segmented photo-tabs">
+          <button className={activeTab === "list" ? "active" : ""} type="button" onClick={() => setActiveTab("list")}>
+            사진 조회
+          </button>
+          <button className={activeTab === "upload" ? "active" : ""} type="button" onClick={() => setActiveTab("upload")}>
+            사진 업로드
+          </button>
+        </div>
         <div className="toolbar photo-toolbar">
-          <Field label="Project">
+          <Field label="프로젝트명">
             <select className="input" value={projectId} onChange={(event) => changeProject(event.target.value)}>
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
@@ -224,7 +277,7 @@ export default function PhotosPage() {
               ))}
             </select>
           </Field>
-          <Field label="Room">
+          <Field label="실">
             <select className="input" value={roomId} onChange={(event) => changeRoom(event.target.value)}>
               <option value="">전체 Room</option>
               {rooms.map((room) => (
@@ -234,26 +287,26 @@ export default function PhotosPage() {
               ))}
             </select>
           </Field>
-          <Field label="Trade">
+          <Field label="공종">
             <select className="input" value={filterTrade} onChange={(event) => setFilterTrade(event.target.value)}>
               <option value="">전체</option>
-              {trades.map((trade) => (
-                <option key={trade}>{trade}</option>
+              {tradeOptions.map((trade) => (
+                <option key={trade.value} value={trade.value}>{trade.label}</option>
               ))}
             </select>
           </Field>
-          <Field label="Surface">
+          <Field label="공사면">
             <select className="input" value={filterSurface} onChange={(event) => setFilterSurface(event.target.value)}>
               <option value="">전체</option>
-              {surfaces.map((surface) => (
-                <option key={surface}>{surface}</option>
+              {defaultSurfaceOptions.map((surface) => (
+                <option key={surface.value} value={surface.value}>{surface.label}</option>
               ))}
             </select>
           </Field>
-          <Field label="From">
+          <Field label="시작일">
             <input className="input" type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
           </Field>
-          <Field label="To">
+          <Field label="종료일">
             <input className="input" type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
           </Field>
           <button className="button" onClick={() => loadPhotos().catch((err) => setStatus(err.message))} type="button">
@@ -265,11 +318,11 @@ export default function PhotosPage() {
         </div>
       </section>
 
-      <div className="dashboard-grid">
+      {activeTab === "list" ? <div className="dashboard-grid">
         <section className="panel">
           <div className="panel-header">
             <div>
-              <h1 className="panel-title">Photo Grid</h1>
+              <h1 className="panel-title">사진 조회</h1>
               <div className="muted">{photos.length} Photos</div>
             </div>
             <span className="badge blue">Room 기준</span>
@@ -300,7 +353,7 @@ export default function PhotosPage() {
 
         <section className="panel">
           <div className="panel-header">
-            <h2 className="panel-title">Selected Photo Details</h2>
+            <h2 className="panel-title">선택 사진 상세</h2>
             <span className="badge orange">{selectedPhoto?.progress_status ?? "EMPTY"}</span>
           </div>
           {selectedPhoto ? (
@@ -317,9 +370,9 @@ export default function PhotosPage() {
                   <dt>작업일자</dt>
                   <dd>{selectedPhoto.work_date}</dd>
                   <dt>공종</dt>
-                  <dd>{selectedPhoto.trade}</dd>
+                  <dd>{labelForOption(tradeOptions, selectedPhoto.trade)}</dd>
                   <dt>공사면</dt>
-                  <dd>{selectedPhoto.work_surface}</dd>
+                  <dd>{labelForOption(defaultSurfaceOptions, selectedPhoto.work_surface)}</dd>
                   <dt>작업자</dt>
                   <dd>{selectedPhoto.worker_name ?? "-"}</dd>
                   <dt>위치</dt>
@@ -371,9 +424,9 @@ export default function PhotosPage() {
           </div>
           <p className="muted">{status}</p>
         </aside>
-      </div>
+      </div> : null}
 
-      <section className="panel">
+      {activeTab === "upload" ? <section className="panel">
         <div className="panel-header">
           <div>
             <h2 className="panel-title">사진 업로드</h2>
@@ -382,7 +435,7 @@ export default function PhotosPage() {
           <UploadCloud size={18} color="#2563eb" />
         </div>
         <div className="upload-grid">
-          <Field label="Room">
+          <Field label="실">
             <select className="input" value={roomId} onChange={(event) => setRoomId(event.target.value)}>
               <option value="">Room 선택</option>
               {rooms.map((room) => (
@@ -392,29 +445,29 @@ export default function PhotosPage() {
               ))}
             </select>
           </Field>
-          <Field label="Surface">
+          <Field label="공사면">
             <select
               className="input"
               value={uploadMeta.work_surface}
               onChange={(event) => setUploadMeta({ ...uploadMeta, work_surface: event.target.value })}
             >
-              {surfaces.map((surface) => (
-                <option key={surface}>{surface}</option>
+              {defaultSurfaceOptions.map((surface) => (
+                <option key={surface.value} value={surface.value}>{surface.label}</option>
               ))}
             </select>
           </Field>
-          <Field label="Trade">
+          <Field label="공종">
             <select
               className="input"
               value={uploadMeta.trade}
               onChange={(event) => setUploadMeta({ ...uploadMeta, trade: event.target.value })}
             >
-              {trades.map((trade) => (
-                <option key={trade}>{trade}</option>
+              {tradeOptions.map((trade) => (
+                <option key={trade.value} value={trade.value}>{trade.label}</option>
               ))}
             </select>
           </Field>
-          <Field label="Work Date">
+          <Field label="작업일자">
             <input
               className="input"
               type="date"
@@ -422,14 +475,14 @@ export default function PhotosPage() {
               onChange={(event) => setUploadMeta({ ...uploadMeta, work_date: event.target.value })}
             />
           </Field>
-          <Field label="Worker">
+          <Field label="작업자">
             <input
               className="input"
               value={uploadMeta.worker_name}
               onChange={(event) => setUploadMeta({ ...uploadMeta, worker_name: event.target.value })}
             />
           </Field>
-          <Field label="Photo">
+          <Field label="사진">
             <input className="input file-input" type="file" accept="image/*" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
           </Field>
           <label className="field upload-note">
@@ -444,7 +497,33 @@ export default function PhotosPage() {
             <UploadCloud size={16} /> 업로드
           </button>
         </div>
-      </section>
+      </section> : null}
+
+      {canManageFilters ? (
+        <section className="panel filter-manager-panel">
+          <div className="panel-header">
+            <div>
+              <h2 className="panel-title">공종 분류 관리</h2>
+              <p className="muted">관리자는 현장 표시용 공종을 추가하거나 삭제할 수 있습니다.</p>
+            </div>
+          </div>
+          <div className="filter-manager-grid">
+            <label className="field">
+              <span className="label">추가할 공종명</span>
+              <input className="input" value={newTradeLabel} onChange={(event) => setNewTradeLabel(event.target.value)} placeholder="예: 석고보드" />
+            </label>
+            <button className="button" type="button" onClick={addCustomTrade}>공종 추가</button>
+          </div>
+          <div className="filter-chip-row">
+            {customTrades.length === 0 ? <span className="muted">추가된 사용자 지정 공종이 없습니다.</span> : null}
+            {customTrades.map((trade) => (
+              <button className="filter-chip" key={trade.value} type="button" onClick={() => removeCustomTrade(trade.value)}>
+                {trade.label} 삭제
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div className="bottom-grid">
         <section className="panel">

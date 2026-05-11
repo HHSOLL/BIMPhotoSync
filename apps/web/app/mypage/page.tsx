@@ -1,6 +1,6 @@
 "use client";
 
-import { Building2, KeyRound, Mail, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
+import { Building2, ImagePlus, KeyRound, Mail, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiJson, authHeaders, readSession, saveSession, type User } from "../client";
 
@@ -35,11 +35,26 @@ export default function MyPage() {
       company_name: json.data.company.name,
       email: json.data.email,
       name: json.data.name,
-      role: json.data.role
+      role: json.data.role,
+      avatar_url: user?.avatar_url ?? null
     };
     saveSession(token, nextUser);
     setUser(nextUser);
     setStatus("내 정보를 새로고침했습니다.");
+  }
+
+  function changeAvatar(file: File | null) {
+    if (!file || !token || !user) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== "string") return;
+      const nextUser = { ...user, avatar_url: result };
+      saveSession(token, nextUser);
+      setUser(nextUser);
+      setStatus("프로필 사진을 저장했습니다.");
+    };
+    reader.readAsDataURL(file);
   }
 
   if (!user) {
@@ -73,6 +88,16 @@ export default function MyPage() {
           <div className="panel-header">
             <h2 className="panel-title">계정 정보</h2>
             <UserRound size={20} />
+          </div>
+          <div className="profile-editor">
+            <span className="profile-avatar-large">
+              {user.avatar_url ? <img src={user.avatar_url} alt="" /> : <UserRound size={30} />}
+            </span>
+            <label className="filter-button">
+              <ImagePlus size={16} />
+              프로필 사진 변경
+              <input type="file" accept="image/*" onChange={(event) => changeAvatar(event.target.files?.[0] ?? null)} />
+            </label>
           </div>
           <dl className="info-list">
             <div>
