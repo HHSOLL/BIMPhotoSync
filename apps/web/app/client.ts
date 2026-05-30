@@ -1,5 +1,5 @@
 export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://bimphotosync-api-production.up.railway.app/api/v1";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "https://api-production-1d018.up.railway.app/api/v1";
 
 export type User = {
   id: string;
@@ -92,6 +92,7 @@ export type Room = {
   area_m2?: number | null;
   location_text?: string | null;
   status: string;
+  progress_by_surface?: Record<string, { status: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED"; photo_count: number }>;
 };
 
 export type PlanPoint = {
