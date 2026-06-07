@@ -255,7 +255,7 @@ a {
   display: grid;
   grid-template-columns: 1.1fr 1.3fr 1fr 1fr 1fr auto;
   gap: 12px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .photo-toolbar {
@@ -707,7 +707,7 @@ a {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .photo-filter-bar {
@@ -720,7 +720,7 @@ a {
     minmax(140px, 0.8fr)
     minmax(140px, 0.8fr);
   gap: 10px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .photo-filter-bar .field {
@@ -799,7 +799,7 @@ a {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
   gap: 12px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .filter-chip-row {
@@ -1225,7 +1225,7 @@ a {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr)) minmax(260px, 1.4fr) auto;
   gap: 14px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .filter-panel {
@@ -1556,7 +1556,7 @@ a {
   min-height: 224px;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
-  align-items: end;
+  align-items: flex-end;
   gap: 14px;
   padding: 22px 4px 4px;
 }
@@ -1565,7 +1565,7 @@ a {
   height: 194px;
   display: grid;
   grid-template-rows: 28px 1fr 44px;
-  align-items: end;
+  align-items: flex-end;
   justify-items: center;
   color: var(--gray-600);
   font-size: 12px;
@@ -1967,7 +1967,7 @@ a {
 
 .report-list-head {
   display: flex;
-  align-items: end;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
   border-bottom: 1px solid var(--gray-200);
@@ -2067,7 +2067,7 @@ a {
 
 .viewer-toolbar {
   grid-template-columns: 170px 220px 170px auto auto auto;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .tool-segment {
@@ -4281,7 +4281,7 @@ body {
   display: grid;
   grid-template-columns: minmax(220px, 320px) auto minmax(0, 1fr);
   gap: 10px;
-  align-items: end;
+  align-items: flex-end;
   padding-top: 12px;
   border-top: 1px solid var(--gray-200);
 }
@@ -4515,7 +4515,7 @@ body {
 .upload-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px 22px;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .upload-note {

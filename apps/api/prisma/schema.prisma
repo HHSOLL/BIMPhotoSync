@@ -405,6 +405,7 @@ model PhotoUpload {
   committedAt    DateTime? @map("committed_at")
   createdAt      DateTime  @default(now()) @map("created_at")
 
+  @@index([projectId, committedAt, expiresAt], map: "idx_photo_uploads_project_commit_expire")
   @@map("photo_uploads")
 }
 
@@ -436,6 +437,7 @@ model Photo {
   tradeCategory   TradeCategory?    @relation(fields: [tradeCategoryId], references: [id], onDelete: SetNull)
   analyses        PhotoAiAnalysis[]
 
+  @@index([projectId, status, workDate(sort: Desc), uploadedAt(sort: Desc)], map: "idx_photos_project_status_workdate_desc")
   @@index([projectId, roomId, workDate(sort: Desc), uploadedAt(sort: Desc)], map: "idx_photos_project_room_workdate_desc")
   @@index([projectId, trade, workSurface, workDate(sort: Desc)], map: "idx_photos_project_trade_surface_date")
   @@index([uploadedById, uploadedAt(sort: Desc)], map: "idx_photos_uploaded_by_date")
