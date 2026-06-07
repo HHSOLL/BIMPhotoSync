@@ -220,9 +220,12 @@ flowchart TB
 - Railway worker service: 같은 GitHub repo `main` branch와 연결하고 config file path를 `railway.worker.json`으로 지정합니다.
 - API service는 `Dockerfile.api`, worker service는 `Dockerfile.worker`를 사용합니다.
 - API healthcheck는 `/api/v1/health`입니다.
+- API는 Helmet 보안 헤더, gzip/deflate 압축, reverse proxy 신뢰 설정, graceful shutdown hook을 켜고 실행합니다. Revit Floor Plan/Sheet 동기화처럼 JSON payload가 큰 요청을 위해 `JSON_BODY_LIMIT`과 `FORM_BODY_LIMIT` 기본값은 `25mb`입니다.
+- 운영 CORS는 API 환경변수 `CORS_ORIGINS`에 Vercel 웹 도메인을 쉼표 구분으로 넣어 제한합니다. 로컬 개발에서는 값을 비워 둘 수 있지만, 운영 Railway API에는 예를 들어 `https://<vercel-domain>` 또는 커스텀 도메인을 지정합니다.
+- DB는 모바일 프로젝트 사진 목록과 웹 사진 필터 조회를 빠르게 하기 위해 `photos(project_id, status, work_date desc, uploaded_at desc)` 인덱스를 사용합니다. 업로드 presign 정리와 중복 commit 확인을 위해 `photo_uploads(project_id, committed_at, expires_at)` 인덱스도 유지합니다.
 - CI는 `.github/workflows/ci.yml`에서 `npm ci`, `npm run typecheck`, `npm run build`를 실행합니다.
 
-Railway 새 프로젝트 생성 후 `DATABASE_URL`, `DIRECT_URL`, `REDIS_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`를 Dashboard에서 입력합니다. 실제 사진 분석과 보고서 문장 생성을 Gemini로 돌리려면 API와 worker에 `GEMINI_API_KEY`를 추가하고, 필요 시 `GEMINI_VISION_MODEL`, `GEMINI_REPORT_MODEL`로 모델을 지정합니다. 현재 보고서 기본 모델은 `gemini-3.5-flash`입니다. 보고서 생성은 `ANTHROPIC_API_KEY`, `ANTHROPIC_REPORT_MODEL`, `REPORT_MODEL_PROVIDER=ANTHROPIC` 설정으로 Anthropic 경로도 사용할 수 있습니다. Render를 대체 배포로 쓸 경우에는 `render.yaml` Blueprint를 사용할 수 있으며, 무료 플랜에서는 별도 Background Worker가 없으므로 API 서비스 안에서 `RUN_INLINE_AI_WORKER=true`로 휴리스틱 분석만 함께 실행하는 구성이 현실적입니다.
+Railway 새 프로젝트 생성 후 `DATABASE_URL`, `DIRECT_URL`, `REDIS_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `CORS_ORIGINS`, `API_PUBLIC_URL`를 Dashboard에서 입력합니다. 실제 사진 분석과 보고서 문장 생성을 Gemini로 돌리려면 API와 worker에 `GEMINI_API_KEY`를 추가하고, 필요 시 `GEMINI_VISION_MODEL`, `GEMINI_REPORT_MODEL`로 모델을 지정합니다. 현재 보고서 기본 모델은 `gemini-3.5-flash`입니다. 보고서 생성은 `ANTHROPIC_API_KEY`, `ANTHROPIC_REPORT_MODEL`, `REPORT_MODEL_PROVIDER=ANTHROPIC` 설정으로 Anthropic 경로도 사용할 수 있습니다. Render를 대체 배포로 쓸 경우에는 `render.yaml` Blueprint를 사용할 수 있으며, 무료 플랜에서는 별도 Background Worker가 없으므로 API 서비스 안에서 `RUN_INLINE_AI_WORKER=true`로 휴리스틱 분석만 함께 실행하는 구성이 현실적입니다.
 
 ## Local Development
 
