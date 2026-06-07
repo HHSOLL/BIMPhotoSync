@@ -68,6 +68,7 @@ export default function App() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [photoRoomFilter, setPhotoRoomFilter] = useState("");
   const [projectPhotosVisible, setProjectPhotosVisible] = useState(false);
+  const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
   const [status, setStatus] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [loadingProjects, setLoadingProjects] = useState(false);
@@ -97,11 +98,6 @@ export default function App() {
   const compactLayout = screenWidth < 380;
   const safeTopPadding = Platform.OS === "android" ? Math.max(24, RNStatusBar.currentHeight ?? 0) + 14 : 12;
   const safeBottomPadding = Platform.OS === "android" ? 36 : 28;
-
-  useEffect(() => {
-    if (!token || !projectId) return;
-    void loadPhotos(token, projectId, photoRoomFilter).catch((error: unknown) => setStatus(getErrorMessage(error, "사진을 불러오지 못했습니다.")));
-  }, [photoRoomFilter]);
 
   async function authenticate() {
     if (!email.trim() || !password.trim()) {
@@ -160,9 +156,10 @@ export default function App() {
       setProjects(nextProjects);
       setProjectId(nextProjectId);
       setPhotoRoomFilter("");
+      setSelectedPhoto(null);
       if (nextProjectId) {
         await loadRooms(nextToken, nextProjectId);
-        await loadPhotos(nextToken, nextProjectId, "");
+        await loadPhotos(nextToken, nextProjectId);
       } else {
         setRooms([]);
         setRoomId("");
@@ -201,15 +198,14 @@ export default function App() {
     }
   }
 
-  async function loadPhotos(nextToken = token, nextProjectId = projectId, nextRoomId = photoRoomFilter) {
+  async function loadPhotos(nextToken = token, nextProjectId = projectId) {
     if (!nextToken || !nextProjectId) return;
     setLoadingPhotos(true);
     try {
       const params = new URLSearchParams({ project_id: nextProjectId });
-      if (nextRoomId) params.set("room_id", nextRoomId);
       const json = await apiJson<{ data: Photo[]; total: number }>(`/photos?${params.toString()}`, { headers: authHeaders(nextToken) });
       const nextPhotos = Array.isArray(json.data) ? json.data : [];
-      setPhotos(nextPhotos);
+      setPhotos(sortPhotosByTime(nextPhotos));
       setStatus(`${json.total}개 사진을 불러왔습니다.`);
     } finally {
       setLoadingPhotos(false);
@@ -261,11 +257,12 @@ export default function App() {
     if (!token || nextProjectId === projectId) return;
     setProjectId(nextProjectId);
     setPhotoRoomFilter("");
+    setSelectedPhoto(null);
     setRoomSearch("");
     setRoomLevelFilter("");
     try {
       await loadRooms(token, nextProjectId);
-      await loadPhotos(token, nextProjectId, "");
+      await loadPhotos(token, nextProjectId);
     } catch (error) {
       showMessage("오류", getErrorMessage(error, "프로젝트 정보를 새로고침하지 못했습니다."));
     }
@@ -273,6 +270,7 @@ export default function App() {
 
   async function openProjectPhotos(nextProjectId: string) {
     await selectProject(nextProjectId);
+    setSelectedPhoto(null);
     setProjectPhotosVisible(true);
   }
 
@@ -385,8 +383,9 @@ export default function App() {
       setStatus("사진 업로드가 완료되었고 AI 분석 대기열에 등록되었습니다.");
       Alert.alert("업로드 완료", "선택한 방에 사진이 연결되었습니다.");
       await loadRooms(token, projectId, roomId);
-      await loadPhotos(token, projectId, roomId);
+      await loadPhotos(token, projectId);
       setPhotoRoomFilter(roomId);
+      setSelectedPhoto(null);
       setTab("projects");
     } catch (error) {
       showMessage("오류", getErrorMessage(error, "사진 업로드에 실패했습니다."));
@@ -406,6 +405,7 @@ export default function App() {
     setImages([]);
     setPhotos([]);
     setPhotoRoomFilter("");
+    setSelectedPhoto(null);
     setRoomSearch("");
     setRoomLevelFilter("");
     setRoomPickerVisible(false);
@@ -483,11 +483,14 @@ export default function App() {
 
           {isAuthenticated && !isUploadStage && tab === "projects" ? (
             <ProjectsScreen
+              authToken={token}
               joinKey={joinKey}
               loadingPhotos={loadingPhotos}
               photoRoomFilter={photoRoomFilter}
               photosVisible={projectPhotosVisible}
+              selectedPhoto={selectedPhoto}
               photos={filteredPhotos}
+              allPhotos={photos}
               previewJoinProject={previewJoinProject}
               projects={projects}
               projectId={projectId}
@@ -498,6 +501,7 @@ export default function App() {
               setJoinKey={setJoinKey}
               setPhotosVisible={setProjectPhotosVisible}
               setPhotoRoomFilter={setPhotoRoomFilter}
+              setSelectedPhoto={setSelectedPhoto}
             />
           ) : null}
 
@@ -611,11 +615,14 @@ function HomeScreen(props: {
 }
 
 function ProjectsScreen(props: {
+  authToken: string;
   joinKey: string;
   loadingPhotos: boolean;
   photoRoomFilter: string;
   photosVisible: boolean;
+  selectedPhoto: Photo | null;
   photos: Photo[];
+  allPhotos: Photo[];
   previewJoinProject: () => Promise<void>;
   projects: Project[];
   projectId: string;
@@ -626,36 +633,72 @@ function ProjectsScreen(props: {
   setJoinKey: (value: string) => void;
   setPhotosVisible: (value: boolean) => void;
   setPhotoRoomFilter: (value: string) => void;
+  setSelectedPhoto: (value: Photo | null) => void;
 }) {
+  const [photoFilterPickerVisible, setPhotoFilterPickerVisible] = useState(false);
+  const photoRooms = useMemo(() => roomsWithPhotos(props.rooms, props.allPhotos), [props.allPhotos, props.rooms]);
+  const selectedFilterRoom = useMemo(() => props.rooms.find((room) => room.id === props.photoRoomFilter) ?? null, [props.photoRoomFilter, props.rooms]);
+
   if (props.photosVisible) {
+    if (props.selectedPhoto) {
+      return (
+        <PhotoDetailScreen
+          authToken={props.authToken}
+          photo={props.selectedPhoto}
+          roomTitleValue={photoTitle(props.selectedPhoto, props.rooms)}
+          onBack={() => props.setSelectedPhoto(null)}
+        />
+      );
+    }
+
     return (
       <View style={styles.homeLayout}>
         <View style={styles.detailTopRow}>
-          <Pressable style={styles.backPill} onPress={() => props.setPhotosVisible(false)}>
-            <Text style={styles.backPillText}>‹ 프로젝트</Text>
+          <Pressable
+            style={styles.backPill}
+            onPress={() => {
+              props.setSelectedPhoto(null);
+              props.setPhotosVisible(false);
+            }}
+          >
+            <Feather name="chevron-left" size={19} color="#1669F2" />
+            <Text style={styles.backPillText}>프로젝트</Text>
           </Pressable>
           {props.loadingPhotos ? <ActivityIndicator color="#2563EB" /> : <StatusPill label={`${props.photos.length}장`} tone={props.photos.length > 0 ? "blue" : "gray"} />}
         </View>
         <Text style={styles.pageTitle}>{props.selectedProject?.name ?? "프로젝트"} 사진</Text>
         <Text style={styles.pageDescription}>방별 필터로 업로드된 현장 사진을 확인합니다.</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.roomFilterRow}>
-          <FilterChip label="전체" active={!props.photoRoomFilter} onPress={() => props.setPhotoRoomFilter("")} />
-          {props.rooms.map((room) => (
-            <FilterChip key={room.id} label={roomTitle(room)} active={props.photoRoomFilter === room.id} onPress={() => props.setPhotoRoomFilter(room.id)} />
-          ))}
-        </ScrollView>
+        <Pressable style={styles.photoFilterButton} onPress={() => setPhotoFilterPickerVisible(true)}>
+          <View style={styles.flexOne}>
+            <Text style={styles.label}>방 필터</Text>
+            <Text style={styles.photoFilterValue}>{selectedFilterRoom ? roomTitle(selectedFilterRoom) : "전체 사진"}</Text>
+          </View>
+          <StatusPill label={props.photoRoomFilter ? `${props.photos.length}장` : `${props.allPhotos.length}장`} tone={props.photos.length > 0 ? "blue" : "gray"} />
+          <ChevronDownIcon />
+        </Pressable>
         <View style={styles.photoGrid}>
           {props.photos.map((photo) => (
-            <View key={photo.id} style={styles.photoCard}>
-              <Image source={{ uri: photo.photo_url }} style={styles.photoImage} resizeMode="cover" />
+            <Pressable key={photo.id} style={styles.photoCard} onPress={() => props.setSelectedPhoto(photo)}>
+              <Image source={photoImageSource(photo, props.authToken)} style={styles.photoImage} resizeMode="cover" />
               <View style={styles.photoCardBody}>
                 <Text style={styles.photoTitle} numberOfLines={1}>{photoTitle(photo, props.rooms)}</Text>
                 <Text style={styles.photoMeta} numberOfLines={3}>{photo.work_date} | {labelFor(surfaces, photo.work_surface)} | {photo.description ?? "작업 내용 없음"}</Text>
               </View>
-            </View>
+            </Pressable>
           ))}
           {props.photos.length === 0 ? <Text style={styles.emptyText}>선택 조건에 맞는 사진이 없습니다.</Text> : null}
         </View>
+        <PhotoRoomFilterModal
+          allPhotoCount={props.allPhotos.length}
+          photoRoomFilter={props.photoRoomFilter}
+          rooms={photoRooms}
+          setPhotoRoomFilter={(roomId) => {
+            props.setPhotoRoomFilter(roomId);
+            props.setSelectedPhoto(null);
+          }}
+          visible={photoFilterPickerVisible}
+          onClose={() => setPhotoFilterPickerVisible(false)}
+        />
       </View>
     );
   }
@@ -709,14 +752,120 @@ function ProfileScreen({ logout, projects, rooms, user }: { logout: () => void; 
         <InfoRow label="참여 프로젝트" value={`${projects.length}개`} />
         <InfoRow label="현재 방 데이터" value={`${rooms.length}개`} />
       </View>
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Revit Add-in 사용 흐름</Text>
-        <Text style={styles.cardDescription}>Revit에서 프로젝트 연결 후 Room Sync, Floor Plan/Sheet/3D Model 동기화를 실행하면 웹과 앱에서 Room 기준 사진을 볼 수 있습니다.</Text>
-      </View>
       <Pressable style={styles.logoutButton} onPress={logout}>
         <Text style={styles.logoutButtonText}>로그아웃</Text>
       </Pressable>
     </View>
+  );
+}
+
+function PhotoDetailScreen({
+  authToken,
+  onBack,
+  photo,
+  roomTitleValue
+}: {
+  authToken: string;
+  onBack: () => void;
+  photo: Photo;
+  roomTitleValue: string;
+}) {
+  return (
+    <View style={styles.homeLayout}>
+      <View style={styles.detailTopRow}>
+        <Pressable style={styles.backPill} onPress={onBack}>
+          <Feather name="chevron-left" size={19} color="#1669F2" />
+          <Text style={styles.backPillText}>사진 목록</Text>
+        </Pressable>
+        <StatusPill label={progressLabel(photo.progress_status)} tone={photo.progress_status === "COMPLETED" ? "green" : "yellow"} />
+      </View>
+      <Text style={styles.pageTitle}>{roomTitleValue}</Text>
+      <Text style={styles.pageDescription}>{photo.work_date} | {labelFor(surfaces, photo.work_surface)} | {labelFor(trades, photo.trade)}</Text>
+      <Image source={photoImageSource(photo, authToken)} style={styles.photoDetailImage} resizeMode="cover" />
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>작업 내용</Text>
+        <Text style={styles.detailBodyText}>{photo.description?.trim() || "입력된 작업 내용이 없습니다."}</Text>
+      </View>
+      <View style={styles.card}>
+        <InfoRow label="올린 사람" value={photo.worker_name?.trim() || "기록 없음"} />
+        <InfoRow label="올린 시간" value={formatDateTime(photo.uploaded_at)} />
+        <InfoRow label="작업일" value={photo.work_date || "기록 없음"} />
+        <InfoRow label="공사면" value={labelFor(surfaces, photo.work_surface)} />
+        <InfoRow label="공종" value={labelFor(trades, photo.trade)} />
+      </View>
+    </View>
+  );
+}
+
+function PhotoRoomFilterModal(props: {
+  allPhotoCount: number;
+  photoRoomFilter: string;
+  rooms: Array<{ room: Room; count: number }>;
+  setPhotoRoomFilter: (value: string) => void;
+  visible: boolean;
+  onClose: () => void;
+}) {
+  const filterOptions = (
+    <>
+      <Pressable
+        style={[styles.filterPickerItem, !props.photoRoomFilter && styles.projectPickerItemActive]}
+        onPress={() => {
+          props.setPhotoRoomFilter("");
+          props.onClose();
+        }}
+      >
+        <View style={styles.flexOne}>
+          <Text style={styles.projectName}>전체 사진</Text>
+          <Text style={styles.projectCode}>{props.allPhotoCount}장</Text>
+        </View>
+        {!props.photoRoomFilter ? <Feather name="check" size={28} color="#1669F2" /> : <ChevronRightIcon />}
+      </Pressable>
+      {props.rooms.map(({ room, count }) => (
+        <Pressable
+          key={room.id}
+          style={[styles.filterPickerItem, props.photoRoomFilter === room.id && styles.projectPickerItemActive]}
+          onPress={() => {
+            props.setPhotoRoomFilter(room.id);
+            props.onClose();
+          }}
+        >
+          <View style={styles.flexOne}>
+            <Text style={styles.projectName}>{roomTitle(room)}</Text>
+            <Text style={styles.projectCode}>{room.level_name ?? "층 정보 없음"} | {count}장</Text>
+          </View>
+          {props.photoRoomFilter === room.id ? <Feather name="check" size={28} color="#1669F2" /> : <ChevronRightIcon />}
+        </Pressable>
+      ))}
+      {props.rooms.length === 0 ? <Text style={styles.emptyText}>사진이 등록된 방이 없습니다.</Text> : null}
+    </>
+  );
+
+  return (
+    <Modal visible={props.visible} transparent animationType="slide" statusBarTranslucent onRequestClose={props.onClose}>
+      <View style={styles.modalBackdrop}>
+        <Pressable style={styles.modalDismissArea} onPress={props.onClose} />
+        <View style={styles.sheetSafe}>
+          <View style={styles.filterSheet}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <Pressable style={styles.sheetBackButton} onPress={props.onClose}>
+                <Feather name="chevron-left" size={30} color="#1669F2" />
+              </Pressable>
+              <View style={styles.flexOne}>
+                <Text style={styles.sheetTitle}>방 필터</Text>
+                <Text style={styles.sheetSubtitle}>사진이 등록된 방만 표시됩니다.</Text>
+              </View>
+              <StatusPill label={`${props.rooms.length}개 방`} tone={props.rooms.length > 0 ? "blue" : "gray"} />
+            </View>
+            {props.rooms.length <= 7 ? (
+              <View style={styles.projectSheetList}>{filterOptions}</View>
+            ) : (
+              <ScrollView contentContainerStyle={styles.projectSheetList} showsVerticalScrollIndicator={false}>{filterOptions}</ScrollView>
+            )}
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -740,7 +889,7 @@ function UploadScreen(props: {
     <View style={styles.uploadLayout}>
       <View style={styles.uploadTopBar}>
         <Pressable style={styles.roundIconButton} onPress={props.clearDraft}>
-          <Text style={styles.backArrow}>‹</Text>
+          <Feather name="chevron-left" size={30} color="#101828" />
         </Pressable>
         <Text style={styles.uploadTitle}>사진 업로드</Text>
         <Pressable style={styles.roundIconButton} onPress={props.choosePhotoSource}>
@@ -1108,6 +1257,59 @@ function photoTitle(photo: Photo, rooms: Room[]) {
   return photo.work_date || "사진";
 }
 
+function photoImageSource(photo: Photo, token: string) {
+  return {
+    uri: photo.photo_url,
+    headers: authHeaders(token)
+  };
+}
+
+function sortPhotosByTime(nextPhotos: Photo[]) {
+  return [...nextPhotos].sort((firstPhoto, secondPhoto) => {
+    const firstTime = photoSortTime(firstPhoto);
+    const secondTime = photoSortTime(secondPhoto);
+    return secondTime - firstTime;
+  });
+}
+
+function photoSortTime(photo: Photo) {
+  const uploadedTime = Date.parse(photo.uploaded_at);
+  if (Number.isFinite(uploadedTime)) return uploadedTime;
+  const workDateTime = Date.parse(photo.work_date);
+  return Number.isFinite(workDateTime) ? workDateTime : 0;
+}
+
+function roomsWithPhotos(rooms: Room[], photos: Photo[]) {
+  const counts = new Map<string, number>();
+  for (const photo of photos) {
+    counts.set(photo.room_id, (counts.get(photo.room_id) ?? 0) + 1);
+  }
+  return rooms
+    .map((room) => ({ room, count: counts.get(room.id) ?? 0 }))
+    .filter(({ count }) => count > 0)
+    .sort((first, second) => roomTitle(first.room).localeCompare(roomTitle(second.room), "ko"));
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "기록 없음";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+function progressLabel(status: string) {
+  if (status === "COMPLETED") return "완료";
+  if (status === "IN_PROGRESS") return "진행중";
+  if (status === "NOT_STARTED") return "시작 전";
+  return status || "상태 없음";
+}
+
 function roomCount(sections: RoomSection[]) {
   return sections.reduce((total, section) => total + section.data.length, 0);
 }
@@ -1267,10 +1469,12 @@ const styles = StyleSheet.create({
   secondaryActionText: { color: "#1669F2", fontWeight: "900", textAlign: "center", fontSize: 16 },
   cardHeaderRow: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
   detailTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  backPill: { minHeight: 42, borderRadius: 999, borderWidth: 1, borderColor: "#D6DEE9", backgroundColor: "#FFFFFF", paddingHorizontal: 14, alignItems: "center", justifyContent: "center" },
+  backPill: { minHeight: 42, borderRadius: 999, borderWidth: 1, borderColor: "#D6DEE9", backgroundColor: "#FFFFFF", paddingHorizontal: 12, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 3 },
   backPillText: { color: "#1669F2", fontSize: 14, fontWeight: "900" },
   flexOne: { flex: 1 },
   roomFilterRow: { gap: 8, paddingVertical: 2 },
+  photoFilterButton: { minHeight: 76, borderRadius: 18, borderWidth: 1, borderColor: "#D6DEE9", backgroundColor: "#FFFFFF", paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", alignItems: "center", gap: 10 },
+  photoFilterValue: { color: "#101828", fontSize: 17, lineHeight: 23, fontWeight: "900" },
   filterChip: { maxWidth: 170, borderRadius: 999, borderWidth: 1, borderColor: "#D6DEE9", paddingHorizontal: 14, paddingVertical: 10, backgroundColor: "#FFFFFF" },
   filterChipActive: { borderColor: "#1669F2", backgroundColor: "#EAF3FF" },
   filterChipText: { color: "#475569", fontWeight: "800" },
@@ -1281,6 +1485,8 @@ const styles = StyleSheet.create({
   photoCardBody: { flex: 1, paddingHorizontal: 12, paddingVertical: 10, justifyContent: "center" },
   photoTitle: { color: "#101828", fontWeight: "900", fontSize: 14 },
   photoMeta: { color: "#667085", fontSize: 12, lineHeight: 17, marginTop: 5 },
+  photoDetailImage: { width: "100%", aspectRatio: 1, borderRadius: 22, backgroundColor: "#E2E8F0" },
+  detailBodyText: { color: "#334155", fontSize: 15, lineHeight: 23, fontWeight: "700" },
   profileCard: { borderRadius: 24, backgroundColor: "#FFFFFF", padding: 22, alignItems: "center", gap: 10, borderWidth: 1, borderColor: "#E1E8F0" },
   avatarCircle: { width: 72, height: 72, borderRadius: 36, backgroundColor: "#EAF3FF", alignItems: "center", justifyContent: "center" },
   avatarText: { color: "#1669F2", fontSize: 26, fontWeight: "900" },
@@ -1295,7 +1501,6 @@ const styles = StyleSheet.create({
   uploadTopBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 8 },
   uploadTitle: { color: "#101828", fontSize: 22, fontWeight: "900" },
   roundIconButton: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF" },
-  backArrow: { color: "#101828", fontSize: 40, lineHeight: 40 },
   selectBox: { minHeight: 64, borderRadius: 16, borderWidth: 1, borderColor: "#D6DEE9", backgroundColor: "#FFFFFF", flexDirection: "row", alignItems: "center", paddingHorizontal: 16, gap: 12 },
   selectValue: { color: "#101828", fontSize: 16, lineHeight: 22, fontWeight: "800" },
   selectorGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
@@ -1331,12 +1536,15 @@ const styles = StyleSheet.create({
   sheetSafe: { backgroundColor: "#FFFFFF", borderTopLeftRadius: 28, borderTopRightRadius: 28 },
   sheet: { height: "82%", borderTopLeftRadius: 28, borderTopRightRadius: 28, backgroundColor: "#FFFFFF", paddingHorizontal: 18, paddingTop: 10, paddingBottom: 12 },
   projectSheet: { height: 560, maxHeight: "78%", borderTopLeftRadius: 28, borderTopRightRadius: 28, backgroundColor: "#FFFFFF", paddingHorizontal: 18, paddingTop: 10, paddingBottom: 18 },
+  filterSheet: { maxHeight: "78%", borderTopLeftRadius: 28, borderTopRightRadius: 28, backgroundColor: "#FFFFFF", paddingHorizontal: 18, paddingTop: 10, paddingBottom: 28 },
   sheetHandle: { alignSelf: "center", width: 44, height: 5, borderRadius: 999, backgroundColor: "#CBD5E1", marginBottom: 12 },
   sheetHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 },
   sheetTitle: { color: "#101828", fontSize: 21, fontWeight: "900" },
   sheetSubtitle: { color: "#667085", fontSize: 13 },
-  projectSheetList: { gap: 10, paddingBottom: 8 },
+  sheetBackButton: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, borderColor: "#D6DEE9", alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF" },
+  projectSheetList: { gap: 10, paddingBottom: 30 },
   projectPickerItem: { minHeight: 68, borderRadius: 18, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#FFFFFF", paddingHorizontal: 14, paddingVertical: 10, flexDirection: "row", alignItems: "center", gap: 12 },
+  filterPickerItem: { minHeight: 58, borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0", backgroundColor: "#FFFFFF", paddingHorizontal: 14, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 12 },
   projectPickerItemActive: { borderColor: "#1669F2", backgroundColor: "#F0F6FF" },
   projectPickerIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "#F3F8FF", alignItems: "center", justifyContent: "center" },
   searchInput: { minHeight: 48, borderRadius: 15, borderWidth: 1, borderColor: "#D6DEE9", paddingHorizontal: 14, color: "#101828", backgroundColor: "#F8FAFC", marginBottom: 10 },
