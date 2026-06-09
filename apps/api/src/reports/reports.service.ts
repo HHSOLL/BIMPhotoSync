@@ -408,6 +408,7 @@ export class ReportsService {
         body: JSON.stringify({
           model: modelName,
           input: [{ role: "user", content }],
+          text: { format: { type: "json_object" } },
           max_output_tokens: 3500
         })
       });
@@ -458,7 +459,6 @@ export class ReportsService {
         body: JSON.stringify({
           model: modelName,
           max_tokens: 2500,
-          temperature: 0.2,
           messages: [
             {
               role: "user",
