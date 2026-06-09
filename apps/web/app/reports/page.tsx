@@ -27,6 +27,7 @@ type ReportList = { data: GeneratedReport[] };
 type ReportResult = { data: GeneratedReport };
 type TradeCategoryList = { data: TradeCategory[] };
 type ReportOwnerFilter = "ALL" | "MINE";
+type ReportModelProvider = "GEMINI" | "OPENAI" | "ANTHROPIC";
 
 export default function ReportsPage() {
   const [token, setToken] = useState("");
@@ -51,7 +52,8 @@ export default function ReportsPage() {
     worker_name: "",
     title: "",
     memo: "",
-    ai_prompt: ""
+    ai_prompt: "",
+    model_provider: "GEMINI" as ReportModelProvider
   });
 
   useEffect(() => {
@@ -147,6 +149,7 @@ export default function ReportsPage() {
           title: filters.title || undefined,
           memo: filters.memo || undefined,
           ai_prompt: filters.ai_prompt || undefined,
+          model_provider: filters.model_provider,
           format: "JSON"
         })
       });
@@ -304,6 +307,18 @@ export default function ReportsPage() {
             placeholder="예: 지난 7일간 공정 지연 원인과 완료 근거를 중심으로 작성해줘"
           />
         </label>
+        <label className="field compact">
+          <span className="label">AI 모델</span>
+          <select
+            className="input"
+            value={filters.model_provider}
+            onChange={(event) => setFilters({ ...filters, model_provider: event.target.value as ReportModelProvider })}
+          >
+            <option value="GEMINI">Gemini</option>
+            <option value="OPENAI">OpenAI</option>
+            <option value="ANTHROPIC">Claude</option>
+          </select>
+        </label>
         <button className="button" type="button" disabled={!canGenerate || generating} onClick={generateReport}>
           <Plus size={16} /> {generating ? "생성 중" : "보고서 생성"}
         </button>
@@ -369,6 +384,7 @@ export default function ReportsPage() {
               <dl className="detail-definition">
                 <dt>생성일</dt><dd>{new Date(selectedReport.created_at).toLocaleString("ko-KR")}</dd>
                 <dt>생성자</dt><dd>{selectedReport.created_by.name}</dd>
+                <dt>AI 모델</dt><dd>{selectedReport.model_provider} / {selectedReport.model_name}</dd>
                 <dt>사진 수</dt><dd>{selectedReport.photo_ids.length}</dd>
               </dl>
               <h3 className="section-title">상황분석</h3>

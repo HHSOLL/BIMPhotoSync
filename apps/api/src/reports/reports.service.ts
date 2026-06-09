@@ -36,9 +36,25 @@ type ReportContent = {
     description: string | null;
     ai_description: string | null;
   }>;
+  work_log?: ReportWorkLogEntry[];
+  judgment?: ReportJudgment;
   progress_timeline: string[];
   analysis_result: string;
   memo: string | null;
+};
+
+type ReportWorkLogEntry = {
+  photo_id: string;
+  date: string;
+  work_item: string;
+  work_detail: string;
+  note: string;
+};
+
+type ReportJudgment = {
+  quality_status: string;
+  special_notes: string;
+  overall_opinion: string;
 };
 
 type ExportFile = {
@@ -47,14 +63,16 @@ type ExportFile = {
   buffer: Buffer;
 };
 
-const reportManagerRoles = ["MANAGER", "PROJECT_ADMIN", "BIM_MANAGER", "COMPANY_ADMIN", "SUPER_ADMIN"];
-
 type ReportModelResult = {
-  provider: "GEMINI" | "ANTHROPIC" | "HEURISTIC";
+  provider: ReportModelProvider;
   modelName: string;
   content: ReportContent | null;
   errorMessage: string | null;
 };
+
+type ReportModelProvider = "GEMINI" | "OPENAI" | "ANTHROPIC" | "HEURISTIC";
+
+const reportManagerRoles = ["MANAGER", "PROJECT_ADMIN", "BIM_MANAGER", "COMPANY_ADMIN", "SUPER_ADMIN"];
 
 type ZipEntry = {
   path: string;
@@ -328,10 +346,11 @@ export class ReportsService {
   }
 
   private async tryGenerateWithConfiguredModel(title: string, generatedBy: string, dto: GenerateReportDto, photos: PhotoForReport[]): Promise<ReportModelResult> {
-    const provider = dto.model_provider ?? this.config.get<"GEMINI" | "ANTHROPIC">("REPORT_MODEL_PROVIDER", "GEMINI");
-    return provider === "ANTHROPIC"
-      ? this.tryGenerateWithAnthropic(title, generatedBy, dto, photos)
-      : this.tryGenerateWithGemini(title, generatedBy, dto, photos);
+    const configuredProvider = this.config.get<"GEMINI" | "OPENAI" | "ANTHROPIC">("REPORT_MODEL_PROVIDER", "GEMINI");
+    const provider = dto.model_provider ?? configuredProvider;
+    if (provider === "OPENAI") return this.tryGenerateWithOpenAI(title, generatedBy, dto, photos);
+    if (provider === "ANTHROPIC") return this.tryGenerateWithAnthropic(title, generatedBy, dto, photos);
+    return this.tryGenerateWithGemini(title, generatedBy, dto, photos);
   }
 
   private async tryGenerateWithGemini(title: string, generatedBy: string, dto: GenerateReportDto, photos: PhotoForReport[]): Promise<ReportModelResult> {
@@ -368,12 +387,67 @@ export class ReportsService {
     }
   }
 
+  private async tryGenerateWithOpenAI(title: string, generatedBy: string, dto: GenerateReportDto, photos: PhotoForReport[]): Promise<ReportModelResult> {
+    const apiKey = this.config.get<string>("OPENAI_API_KEY");
+    const modelName = this.config.get<string>("OPENAI_REPORT_MODEL", "gpt-5.5-2026-04-23");
+    if (!apiKey) return { provider: "HEURISTIC", modelName: "bim-photo-sync-report-v1", content: null, errorMessage: null };
+
+    try {
+      const content: Array<Record<string, unknown>> = [{ type: "input_text", text: buildReportGenerationPrompt(title, generatedBy, dto, photos) }];
+      for (const photo of photos.slice(0, 8)) {
+        const image = await this.getPhotoInlineData(photo).catch(() => null);
+        if (image) content.push({ type: "input_image", image_url: `data:${image.mime_type};base64,${image.data}` });
+      }
+
+      const res = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: modelName,
+          input: [{ role: "user", content }],
+          max_output_tokens: 3500
+        })
+      });
+
+      if (!res.ok) throw new Error(`OpenAI report generation failed: ${res.status} ${await res.text()}`);
+      const json = (await res.json()) as unknown;
+      const text = openAIResponseText(json);
+      const parsed = parseReportJson(text);
+      return { provider: "OPENAI", modelName, content: normalizeReportContent(parsed, title, generatedBy, dto, photos), errorMessage: null };
+    } catch (error) {
+      return {
+        provider: "HEURISTIC",
+        modelName: "bim-photo-sync-report-v1",
+        content: null,
+        errorMessage: error instanceof Error ? error.message : "OpenAI report generation failed."
+      };
+    }
+  }
+
   private async tryGenerateWithAnthropic(title: string, generatedBy: string, dto: GenerateReportDto, photos: PhotoForReport[]): Promise<ReportModelResult> {
     const apiKey = this.config.get<string>("ANTHROPIC_API_KEY");
     const modelName = this.config.get<string>("ANTHROPIC_REPORT_MODEL", "claude-opus-4-8");
     if (!apiKey) return { provider: "HEURISTIC", modelName: "bim-photo-sync-report-v1", content: null, errorMessage: null };
 
     try {
+      const content: Array<Record<string, unknown>> = [{ type: "text", text: buildReportGenerationPrompt(title, generatedBy, dto, photos) }];
+      for (const photo of photos.slice(0, 8)) {
+        const image = await this.getPhotoInlineData(photo).catch(() => null);
+        if (image) {
+          content.push({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: image.mime_type,
+              data: image.data
+            }
+          });
+        }
+      }
+
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -388,7 +462,7 @@ export class ReportsService {
           messages: [
             {
               role: "user",
-              content: [{ type: "text", text: buildReportGenerationPrompt(title, generatedBy, dto, photos) }]
+              content
             }
           ]
         })
@@ -473,6 +547,18 @@ function buildTitle(dto: GenerateReportDto, photos: PhotoForReport[]) {
 
 function buildReportGenerationPrompt(title: string, generatedBy: string, dto: GenerateReportDto, photos: PhotoForReport[]) {
   return [
+    "Priority instruction: follow this structured schema even if any later legacy instruction conflicts.",
+    "Return strict JSON only, with Korean user-facing values.",
+    "Required JSON fields: title, generated_at, generated_by, filters, situation, comparison_photos, work_log, judgment, progress_timeline, analysis_result, memo.",
+    "comparison_photos must keep the same photo_id values and count as the input photos.",
+    "work_log must contain exactly one row per input photo; do not create rows for dates with no photos.",
+    "work_log fields: photo_id, date, work_item, work_detail, note.",
+    "work_item must be '<work surface label> / <actual task name>', for example '바닥 / 에폭시 프라이머 도포'.",
+    "work_detail must be a construction-log detail sentence based on both the image and the worker-written description.",
+    "note must be a caution, check item, or site note for that task. Do not put the worker name in note.",
+    "judgment fields: quality_status, special_notes, overall_opinion.",
+    "judgment must summarize the whole workflow and final judgement, not describe each photo one by one.",
+    "analysis_result must be a short overall Korean summary; detailed table text belongs in work_log and judgment.",
     "너는 BIM 현장 사진 분석 보고서 작성자다.",
     "아래 사진과 메타데이터를 근거로 한국어 JSON 보고서를 작성한다.",
     "반드시 JSON만 반환한다. Markdown은 금지한다.",
@@ -528,9 +614,45 @@ function buildHeuristicReport(title: string, generatedBy: string, dto: GenerateR
       worker_name: dto.worker_name ?? null
     },
     comparison_photos: sorted.map(photoSummary),
+    work_log: sorted.map((photo) => buildFallbackWorkLogEntry(photo)),
+    judgment: buildFallbackJudgment(sorted, dto),
     progress_timeline: timeline,
     analysis_result: analysis,
     memo: dto.memo ?? null
+  };
+}
+
+function buildFallbackWorkLogEntry(photo: PhotoForReport): ReportWorkLogEntry {
+  const summary = photoSummary(photo);
+  const description = summary.description ?? summary.ai_description ?? "";
+  return {
+    photo_id: photo.id,
+    date: summary.work_date,
+    work_item: fallbackWorkItem(summary),
+    work_detail: fallbackWorkDetail(summary),
+    note: fallbackWorkNote(summary)
+  };
+}
+
+function buildFallbackJudgment(photos: PhotoForReport[], dto: GenerateReportDto): ReportJudgment {
+  const sorted = sortPhotosForReport(photos);
+  const firstDate = sorted[0]?.workDate.toISOString().slice(0, 10) ?? "";
+  const lastDate = sorted[sorted.length - 1]?.workDate.toISOString().slice(0, 10) ?? "";
+  const steps = uniqueText(sorted.map((photo) => extractTaskName(photo.description ?? photo.aiDescription ?? "")));
+  const room = sorted[0] ? roomLabel(sorted[0]) : null;
+  const scope = [room, dto.work_surface ? reportWorkSurfaceLabel(dto.work_surface) : null, dto.trade ?? sorted[0]?.tradeCategory?.label ?? sorted[0]?.trade ?? null]
+    .filter((item): item is string => Boolean(item))
+    .join(" / ");
+  return {
+    quality_status: sorted.length > 0
+      ? `${scope || "현장"} 작업은 ${formatReportDateRange(`${firstDate} ~ ${lastDate}`)} 기간 동안 ${steps.join(" → ") || "등록된 작업"} 순서로 진행된 것으로 확인됩니다. 작업자 입력 내용과 사진 근거를 함께 검토했으며, 최종 품질 판정은 현장 확인과 양생/마감 상태 점검을 기준으로 확정해야 합니다.`
+      : "선택한 조건에 해당하는 작업 사진이 없어 품질 상태를 판단할 수 없습니다.",
+    special_notes: sorted.length > 0
+      ? "작업 단계 간 건조·양생 시간, 표면 이물질, 들뜸, 기포, 미시공 구간 여부를 후속 점검에서 확인해야 합니다."
+      : "기간, 방, 공종, 공사면 조건을 확인한 뒤 다시 생성해야 합니다.",
+    overall_opinion: sorted.length > 0
+      ? `${sorted.length}장의 사진 근거와 작업자 입력 내용을 종합하여 공정 흐름을 확인했습니다. 보고서의 작업일지와 사진 페이지를 함께 검토해 누락 공정 여부를 확인하십시오.`
+      : "검토 가능한 사진 근거가 없습니다."
   };
 }
 
@@ -651,6 +773,22 @@ function parseReportJson(text: string) {
   return JSON.parse(cleaned) as Partial<ReportContent>;
 }
 
+function openAIResponseText(value: unknown) {
+  if (!isRecord(value)) return "";
+  const directText = stringifyReportValue(value.output_text);
+  if (directText) return directText;
+  const output = Array.isArray(value.output) ? value.output : [];
+  return output
+    .flatMap((item) => isRecord(item) && Array.isArray(item.content) ? item.content : [])
+    .map((part) => {
+      if (!isRecord(part)) return "";
+      return stringifyReportValue(part.text ?? part.output_text);
+    })
+    .filter((text) => text.length > 0)
+    .join("\n")
+    .trim();
+}
+
 function normalizeReportContent(
   value: Partial<ReportContent>,
   title: string,
@@ -670,6 +808,9 @@ function normalizeReportContent(
   const timeline = Array.isArray(value.progress_timeline)
     ? value.progress_timeline.map((line) => stringifyReportValue(line)).filter((line) => line.length > 0)
     : [];
+  const workLog = Array.isArray(value.work_log)
+    ? value.work_log.map((row, index) => normalizeWorkLogEntry(row, fallback.work_log?.[index], mergedComparisonPhotos[index])).filter((row): row is ReportWorkLogEntry => row !== null)
+    : [];
   return {
     ...fallback,
     title: stringifyReportValue(value.title) || fallback.title,
@@ -678,6 +819,8 @@ function normalizeReportContent(
     filters: isRecord(value.filters) ? normalizeStringRecord(value.filters) : fallback.filters,
     situation: isRecord(value.situation) ? { ...fallback.situation, ...normalizeStringRecord(value.situation) } : fallback.situation,
     comparison_photos: mergedComparisonPhotos,
+    work_log: workLog.length ? workLog : fallback.work_log,
+    judgment: normalizeJudgment(value.judgment, fallback.judgment),
     progress_timeline: timeline.length ? timeline : fallback.progress_timeline,
     analysis_result: stringifyReportValue(value.analysis_result) || fallback.analysis_result,
     memo: value.memo === null ? null : stringifyReportValue(value.memo) || fallback.memo
@@ -702,6 +845,10 @@ function normalizeStoredContent(value: unknown, title: string, generatedBy: stri
     comparison_photos: Array.isArray(value.comparison_photos)
       ? value.comparison_photos.map((photo) => normalizeComparisonPhoto(photo, undefined)).filter((photo): photo is ReportContent["comparison_photos"][number] => Boolean(photo))
       : [],
+    work_log: Array.isArray(value.work_log)
+      ? value.work_log.map((row) => normalizeWorkLogEntry(row, undefined, undefined)).filter((row): row is ReportWorkLogEntry => row !== null)
+      : undefined,
+    judgment: normalizeJudgment(value.judgment, undefined),
     progress_timeline: Array.isArray(value.progress_timeline) ? value.progress_timeline.map(stringifyReportValue).filter(Boolean) : [],
     analysis_result: stringifyReportValue(value.analysis_result),
     memo: stringifyNullableReportValue(value.memo)
@@ -736,6 +883,37 @@ function normalizeComparisonPhoto(
     worker_name: stringifyNullableReportValue(value.worker_name ?? value.worker),
     description: stringifyNullableReportValue(value.description),
     ai_description: stringifyNullableReportValue(value.ai_description ?? value.summary)
+  };
+}
+
+function normalizeWorkLogEntry(
+  value: unknown,
+  fallback: ReportWorkLogEntry | undefined,
+  photo: ReportContent["comparison_photos"][number] | undefined
+): ReportWorkLogEntry | null {
+  if (!isRecord(value) && !fallback && !photo) return null;
+  const record = isRecord(value) ? value : {};
+  const photoId = stringifyReportValue(record.photo_id ?? record.photoId) || fallback?.photo_id || photo?.photo_id || "";
+  const date = stringifyReportValue(record.date ?? record.work_date ?? record.workDate) || fallback?.date || photo?.work_date || "";
+  const item = stringifyReportValue(record.work_item ?? record.item) || fallback?.work_item || fallbackWorkItem(photo) || "";
+  const detail = stringifyReportValue(record.work_detail ?? record.detail) || fallback?.work_detail || photo?.description || photo?.ai_description || "";
+  const note = stringifyReportValue(record.note ?? record.precautions ?? record.caution) || fallback?.note || fallbackWorkNote(photo) || "";
+  if (!photoId && !date && !item && !detail && !note) return null;
+  return {
+    photo_id: photoId,
+    date,
+    work_item: item,
+    work_detail: detail,
+    note
+  };
+}
+
+function normalizeJudgment(value: unknown, fallback: ReportJudgment | undefined): ReportJudgment | undefined {
+  if (!isRecord(value)) return fallback;
+  return {
+    quality_status: stringifyReportValue(value.quality_status ?? value.qualityStatus) || fallback?.quality_status || "",
+    special_notes: stringifyReportValue(value.special_notes ?? value.specialNotes) || fallback?.special_notes || "",
+    overall_opinion: stringifyReportValue(value.overall_opinion ?? value.overallOpinion) || fallback?.overall_opinion || ""
   };
 }
 
@@ -832,7 +1010,7 @@ function wordTemplateTextReplacements(content: ReportContent) {
   rowTextNodes.forEach((nodeSet, index) => {
     const row = workRows[index];
     replaceTextRunRange(replacements, nodeSet.date, row?.date ?? "");
-    replaceTextRunRange(replacements, nodeSet.item, reportWorkLogLabel(row?.item ?? ""));
+    replaceTextRunRange(replacements, nodeSet.item, row?.item ?? "");
     replaceTextRunRange(replacements, nodeSet.detail, row?.detail ?? "");
     replaceTextRunRange(replacements, nodeSet.note, row?.note ?? "");
   });
@@ -908,11 +1086,11 @@ function compactWorkLogTable(content: ReportContent) {
     ],
     ...rows.map((row) => [
       wordTextCell(row.date, 1400, { align: "center", size: 16 }),
-      wordTextCell(reportWorkLogLabel(row.item), 1800, { size: 16 }),
+      wordTextCell(row.item, 1800, { size: 16 }),
       wordTextCell(row.detail, 5000, { size: 16 }),
       wordTextCell(row.note, 1800, { size: 16 })
     ])
-  ], { width: 9000 });
+  ], { width: 9000, columnWidths: [1400, 1800, 5000, 1800] });
 }
 
 function dynamicPhotoSectionXml(content: ReportContent, images: ReportImage[]) {
@@ -954,11 +1132,11 @@ function reportJudgmentContent(content: ReportContent, dateRange: string) {
   const sections = reportAnalysisSections(content.analysis_result);
   const trade = reportTradeLabel(dominantReportTrade(content));
   const scope = `${content.situation.room ?? "현장 전체"} / ${trade} / ${formatReportDateRange(dateRange)}`;
-  const quality = sections.judgment || sections.details || content.analysis_result || "등록된 사진 기준 분석 결과가 없습니다.";
-  const notes = sections.precautions || content.memo || "현장 조건과 누락 사진 여부를 다음 점검 시 재확인합니다.";
-  const opinion = content.comparison_photos.length > 0
-    ? `${content.comparison_photos.length}장의 사진 근거를 날짜순으로 검토했습니다. 방, 공종, 공사면, 공사일 기준으로 시공 상태를 확인했습니다.`
-    : "선택한 조건에 해당하는 사진 데이터가 없습니다.";
+  const quality = content.judgment?.quality_status || sections.judgment || sections.details || content.analysis_result || "등록된 사진 기준 분석 결과가 없습니다.";
+  const notes = content.judgment?.special_notes || sections.precautions || content.memo || "현장 조건과 누락 사진 여부를 다음 점검 시 재확인합니다.";
+  const opinion = content.judgment?.overall_opinion || (content.comparison_photos.length > 0
+    ? `${content.comparison_photos.length}장의 사진 근거와 작업자 입력 내용을 종합하여 공정 흐름과 시공 상태를 확인했습니다.`
+    : "선택한 조건에 해당하는 사진 데이터가 없습니다.");
   return {
     scope,
     quality,
@@ -967,7 +1145,6 @@ function reportJudgmentContent(content: ReportContent, dateRange: string) {
     opinion
   };
 }
-
 function reportAnalysisSections(text: string) {
   const result = { workItems: "", details: "", precautions: "", judgment: "" };
   const matches = Array.from(text.matchAll(/(?:^| \/ )(?<key>work_items|details|precautions|judgment):\s*(?<value>.*?)(?= \/ (?:work_items|details|precautions|judgment):|$)/g));
@@ -984,10 +1161,10 @@ function reportAnalysisSections(text: string) {
 
 function photoSlotText(photo: ReportContent["comparison_photos"][number]) {
   return [
-    `방 ${photo.room}`,
-    `공종 ${reportTradeLabel(photo.trade)}`,
-    `공사면 ${reportWorkSurfaceLabel(photo.work_surface)}`,
-    "공사일",
+    `\uBC29 ${photo.room}`,
+    `\uACF5\uC885 ${reportTradeLabel(photo.trade)}`,
+    `\uACF5\uC0AC\uBA74 ${reportWorkSurfaceLabel(photo.work_surface)}`,
+    "\uACF5\uC0AC\uC77C",
     formatKoreanDate(photo.work_date)
   ];
 }
@@ -1001,32 +1178,32 @@ function reportWorkLogLabel(value: string) {
 
 function reportTradeLabel(value: string) {
   const labels: Record<string, string> = {
-    WATERPROOF: "방수",
-    TILE: "타일",
-    PAINT: "도장",
-    ELECTRIC: "전기",
-    MEP: "기계/설비",
-    WINDOW: "창호",
-    CONCRETE: "콘크리트",
-    OTHER: "기타"
+    WATERPROOF: "\uBC29\uC218",
+    TILE: "\uD0C0\uC77C",
+    PAINT: "\uB3C4\uC7A5",
+    ELECTRIC: "\uC804\uAE30",
+    MEP: "\uAE30\uACC4/\uC124\uBE44",
+    WINDOW: "\uCC3D\uD638",
+    CONCRETE: "\uCF58\uD06C\uB9AC\uD2B8",
+    OTHER: "\uAE30\uD0C0"
   };
   return labels[value] ?? value;
 }
 
 function reportWorkSurfaceLabel(value: string) {
   const labels: Record<string, string> = {
-    FLOOR: "바닥",
-    WALL: "벽",
-    ENTRY_WALL: "입구벽",
-    FRONT_WALL: "정면벽",
-    RIGHT_WALL: "우측벽",
-    LEFT_WALL: "좌측벽",
-    CEILING: "천장",
-    WINDOW: "창",
-    DOOR: "문",
-    PIPE: "배관",
-    ELECTRIC: "전기",
-    OTHER: "기타"
+    FLOOR: "\uBC14\uB2E5",
+    WALL: "\uBCBD",
+    ENTRY_WALL: "\uC785\uAD6C\uBCBD",
+    FRONT_WALL: "\uC815\uBA74\uBCBD",
+    RIGHT_WALL: "\uC6B0\uCE21\uBCBD",
+    LEFT_WALL: "\uC88C\uCE21\uBCBD",
+    CEILING: "\uCC9C\uC7A5",
+    WINDOW: "\uCC3D",
+    DOOR: "\uBB38",
+    PIPE: "\uBC30\uAD00",
+    ELECTRIC: "\uC804\uAE30",
+    OTHER: "\uAE30\uD0C0"
   };
   return labels[value] ?? value;
 }
@@ -1073,7 +1250,7 @@ function reportInfoTable(content: ReportContent, dateRange: string) {
       wordTextCell("■ 작성자", 1900, { bold: true, fill: "F2F6FB" }),
       wordTextCell(content.generated_by, 3600)
     ]
-  ], { width: 11700 });
+  ], { width: 11700, columnWidths: [1900, 3300, 1900, 3600] });
 }
 
 function workLogTable(content: ReportContent) {
@@ -1091,21 +1268,19 @@ function workLogTable(content: ReportContent) {
       wordTextCell(row.detail, 5300, { size: 18 }),
       wordTextCell(row.note, 2000, { size: 18 })
     ])
-  ], { width: 11700 });
+  ], { width: 11700, columnWidths: [1900, 2500, 5300, 2000] });
 }
 
 function judgmentTable(content: ReportContent, dateRange: string) {
-  const photoCount = content.comparison_photos.length;
-  const trade = dominantReportTrade(content);
-  const scope = content.situation.room ?? "현장 전체";
+  const judgment = reportJudgmentContent(content, dateRange);
   return wordTable([
-    [wordRawCell(wordParagraph("■ 종합 판단", { bold: true, size: 24 }), 11700, { gridSpan: 2, fill: "F8FAFC" })],
-    [wordTextCell("시공 범위", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(`${scope} / ${trade} / ${formatReportDateRange(dateRange)}`, 9500)],
-    [wordTextCell("품질 상태", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(content.analysis_result || "등록된 사진 기준 분석 결과가 없습니다.", 9500)],
-    [wordTextCell("완료 일자", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(reportLastDateText(content), 9500)],
-    [wordTextCell("특이 사항", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(content.memo ?? "현장 조건과 누락 사진 여부를 다음 점검 시 재확인합니다.", 9500)],
-    [wordTextCell("종합 의견", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(`${photoCount}장의 사진 근거를 날짜순으로 검토했습니다. 방, 공종, 공사면별 세부 근거는 사진 페이지를 확인하십시오.`, 9500)]
-  ], { width: 11700 });
+    [wordRawCell(wordParagraph("\u25A0 \uC885\uD569 \uD310\uB2E8", { bold: true, size: 24 }), 11700, { gridSpan: 2, fill: "F8FAFC" })],
+    [wordTextCell("\uC2DC\uACF5 \uBC94\uC704", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(judgment.scope, 9500)],
+    [wordTextCell("\uD488\uC9C8 \uC0C1\uD0DC", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(judgment.quality, 9500)],
+    [wordTextCell("\uC644\uB8CC \uC77C\uC790", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(judgment.completedAt, 9500)],
+    [wordTextCell("\uD2B9\uC774 \uC0AC\uD56D", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(judgment.notes, 9500)],
+    [wordTextCell("\uC885\uD569 \uC758\uACAC", 2200, { bold: true, fill: "F2F6FB" }), wordTextCell(judgment.opinion, 9500)]
+  ], { width: 11700, columnWidths: [2200, 9500] });
 }
 
 function photoGridTable(
@@ -1119,7 +1294,7 @@ function photoGridTable(
     const right = slots[start + 1] ?? null;
     rows.push(right ? [photoSlotCell(left, imageByPhotoId, 4500), photoSlotCell(right, imageByPhotoId, 4500)] : [photoSlotCell(left, imageByPhotoId, 9000, 2)]);
   }
-  return wordTable(rows, { width: 9000 });
+  return wordTable(rows, { width: 9000, columnWidths: [4500, 4500] });
 }
 
 function photoSlotCell(
@@ -1135,8 +1310,8 @@ function photoSlotCell(
   const meta = photo
     ? [
         ["방", photo.room],
-        ["공종", photo.trade],
-        ["공사면", photo.work_surface],
+        ["공종", reportTradeLabel(photo.trade) || "전체 공종"],
+        ["공사면", reportWorkSurfaceLabel(photo.work_surface)],
         ["공사일", formatKoreanDate(photo.work_date)],
         ["작업내용", photo.description ?? photo.ai_description ?? "내용 없음"]
       ]
@@ -1150,9 +1325,41 @@ function photoSlotCell(
   const metaXml = wordTable(meta.map(([label, value]) => [
     wordTextCell(label, 1200, { bold: true, fill: "F8FAFC", size: 17 }),
     wordTextCell(value, width - 1700, { size: 17 })
-  ]), { width: width - 500, nested: true });
+  ]), { width: width - 500, nested: true, columnWidths: [1200, width - 1700] });
 
   return wordRawCell(`${imageBlock}${metaXml}`, width, gridSpan ? { gridSpan } : {});
+}
+
+function fallbackWorkItem(photo: ReportContent["comparison_photos"][number] | undefined) {
+  if (!photo) return "";
+  return [reportWorkSurfaceLabel(photo.work_surface), extractTaskName(photo.description ?? photo.ai_description ?? "")]
+    .filter((value) => value.length > 0)
+    .join(" / ");
+}
+
+function fallbackWorkDetail(photo: ReportContent["comparison_photos"][number]) {
+  const description = photo.description ?? photo.ai_description ?? "";
+  const taskName = extractTaskName(description);
+  if (description.length > 0) {
+    return `${photo.room} \uAD6C\uC5ED\uC5D0\uC11C ${taskName || description} \uC791\uC5C5\uC774 \uAE30\uB85D\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC0AC\uC9C4\uACFC \uC791\uC5C5\uC790 \uC785\uB825 \uB0B4\uC6A9\uC744 \uAE30\uC900\uC73C\uB85C \uD574\uB2F9 \uACF5\uC815\uC758 \uC9C4\uD589 \uC0C1\uD0DC\uB97C \uD655\uC778\uD569\uB2C8\uB2E4.`;
+  }
+  return `${photo.room} \uAD6C\uC5ED\uC758 ${reportWorkSurfaceLabel(photo.work_surface)} \uACF5\uC0AC\uBA74 \uC0AC\uC9C4\uC774 \uB4F1\uB85D\uB418\uC5C8\uC2B5\uB2C8\uB2E4.`;
+}
+
+function fallbackWorkNote(photo: ReportContent["comparison_photos"][number] | undefined) {
+  const workItem = extractTaskName(photo?.description ?? photo?.ai_description ?? "");
+  if (/(?:\uD504\uB77C\uC774\uBA38|\uD558\uB3C4)/i.test(workItem)) return "\uB3C4\uD3EC \uD6C4 \uCDA9\uBD84\uD55C \uAC74\uC870 \uC2DC\uAC04\uACFC \uD6C4\uC18D \uB3C4\uC7A5\uCE35 \uC811\uCC29 \uC0C1\uD0DC\uB97C \uD655\uC778\uD574\uC57C \uD569\uB2C8\uB2E4.";
+  if (/(?:\uD37C\uD2F0|\uD06C\uB799|\uADE0\uC5F4)/i.test(workItem)) return "\uBCF4\uC218 \uBD80\uC704 \uACBD\uD654 \uC0C1\uD0DC\uC640 \uC7AC\uADE0\uC5F4 \uC5EC\uBD80\uB97C \uD655\uC778\uD574\uC57C \uD569\uB2C8\uB2E4.";
+  if (/(?:\uB77C\uC774\uB2DD|\uB3C4\uC7A5|\uCF54\uD305|\uC0C1\uB3C4|\uC911\uB3C4)/i.test(workItem)) return "\uB3C4\uB9C9 \uB450\uAED8, \uAE30\uD3EC, \uD540\uD640, \uB4E4\uB72C, \uBBF8\uB3C4\uD3EC \uAD6C\uAC04 \uC5EC\uBD80\uB97C \uD655\uC778\uD574\uC57C \uD569\uB2C8\uB2E4.";
+  if (/(?:\uC5F0\uC0AD|\uBC14\uD0D5|\uBA74\uCC98\uB9AC|\uAC8C\uB9C1)/i.test(workItem)) return "\uBD84\uC9C4 \uC81C\uAC70, \uD45C\uBA74 \uC774\uBB3C\uC9C8 \uC81C\uAC70, \uC811\uCC29\uB825 \uD655\uBCF4 \uC0C1\uD0DC\uB97C \uD655\uC778\uD574\uC57C \uD569\uB2C8\uB2E4.";
+  return "\uD604\uC7A5 \uC870\uAC74\uACFC \uC0AC\uC9C4 \uADFC\uAC70\uB97C \uD568\uAED8 \uAC80\uD1A0\uD574 \uD6C4\uC18D \uC791\uC5C5 \uAC00\uB2A5 \uC5EC\uBD80\uB97C \uD655\uC778\uD574\uC57C \uD569\uB2C8\uB2E4.";
+}
+
+function extractTaskName(value: string) {
+  return value
+    .replace(/\s*(?:\uC644\uB8CC|\uC9C4\uD589\s*\uC911|\uC791\uC5C5\s*\uC911|\uC2DC\uC791\s*\uC804)\s*$/g, "")
+    .replace(/[.?]+$/g, "")
+    .trim();
 }
 
 type WordTextOptions = {
@@ -1166,13 +1373,16 @@ type WordTextOptions = {
 };
 
 function buildWorkLogRows(content: ReportContent) {
-  const rowsByDate = new Map<string, ReportContent["comparison_photos"]>();
-  for (const photo of content.comparison_photos) {
-    const key = photo.work_date || "날짜 없음";
-    rowsByDate.set(key, [...(rowsByDate.get(key) ?? []), photo]);
-  }
-  const reportDates = datesInReportRange(content.situation.date_range) ?? Array.from(rowsByDate.keys()).sort();
-  if (reportDates.length === 0) {
+  const rows = content.work_log?.length
+    ? content.work_log
+    : content.comparison_photos.map((photo) => ({
+        photo_id: photo.photo_id,
+        date: photo.work_date,
+        work_item: fallbackWorkItem(photo),
+        work_detail: fallbackWorkDetail(photo),
+        note: fallbackWorkNote(photo)
+      }));
+  if (rows.length === 0) {
     return [{
       date: "-",
       item: "사진 데이터 없음",
@@ -1181,29 +1391,16 @@ function buildWorkLogRows(content: ReportContent) {
     }];
   }
 
-  return reportDates.slice(0, 31).map((date) => {
-    const photos = rowsByDate.get(date) ?? [];
-    if (photos.length === 0) {
-      return {
-        date: formatKoreanDateWithWeekday(date),
-        item: "등록 사진 없음",
-        detail: "선택한 조건에 해당하는 작업 사진이 등록되지 않았습니다.",
-        note: "현장 작업 여부와 사진 누락 여부 확인 필요"
-      };
-    }
-    const tradeNames = uniqueText(photos.map((photo) => photo.trade));
-    const surfaceNames = uniqueText(photos.map((photo) => photo.work_surface));
-    const descriptions = uniqueText(photos.map((photo) => photo.description ?? photo.ai_description ?? ""));
-    const workers = uniqueText(photos.map((photo) => photo.worker_name ?? ""));
-    return {
-      date: formatKoreanDateWithWeekday(date),
-      item: [surfaceNames.join(", "), tradeNames.join(", ")].filter(Boolean).join(" / ") || "현장 사진 기록",
-      detail: descriptions.join("\n") || `${photos.length}장의 사진 근거가 등록되었습니다.`,
-      note: workers.length > 0 ? `작성자: ${workers.join(", ")}` : "AI 분석 및 현장 검토 필요"
-    };
-  });
+  return rows
+    .filter((row) => row.date || row.work_item || row.work_detail || row.note)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.photo_id.localeCompare(b.photo_id))
+    .map((row) => ({
+      date: formatKoreanDateWithWeekday(row.date),
+      item: row.work_item || "현장 사진 기록",
+      detail: row.work_detail || "사진 근거가 등록되었습니다.",
+      note: row.note || "AI 분석 및 현장 검토 필요"
+    }));
 }
-
 function datesInReportRange(value: string | null) {
   const first = firstDateFromRange(value);
   const last = lastDateFromRange(value);
@@ -1221,8 +1418,8 @@ function datesInReportRange(value: string | null) {
   return dates;
 }
 
-function uniqueText(values: string[]) {
-  return Array.from(new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)));
+function uniqueText(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => typeof value === "string" ? value.trim() : "").filter((value) => value.length > 0)));
 }
 
 function dominantReportTrade(content: ReportContent) {
@@ -1231,7 +1428,7 @@ function dominantReportTrade(content: ReportContent) {
   for (const photo of content.comparison_photos) {
     if (photo.trade) counts.set(photo.trade, (counts.get(photo.trade) ?? 0) + 1);
   }
-  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "전체 공종";
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "\uC804\uCCB4 \uACF5\uC885";
 }
 
 function reportDocumentTitle(content: ReportContent) {
@@ -1241,12 +1438,12 @@ function reportDocumentTitle(content: ReportContent) {
   const date = new Date(firstDate);
   if (Number.isNaN(date.getTime())) return content.title;
   const week = Math.max(1, Math.ceil(date.getDate() / 7));
-  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${week}주차 시공일지`;
+  return `${date.getFullYear()}\uB144 ${date.getMonth() + 1}\uC6D4 ${week}\uC8FC\uCC28 \uC2DC\uACF5\uC77C\uC9C0`;
 }
 
 function reportLastDateText(content: ReportContent) {
   const dates = content.comparison_photos.map((photo) => photo.work_date).filter(Boolean).sort();
-  return dates.length > 0 ? `${formatKoreanDateWithWeekday(dates[dates.length - 1])} 기준` : "완료일 미확정";
+  return dates.length > 0 ? `${formatKoreanDateWithWeekday(dates[dates.length - 1])} \uAE30\uC900` : "\uC644\uB8CC\uC77C \uBBF8\uD655\uC815";
 }
 
 function formatReportDateRange(value: string) {
@@ -1254,7 +1451,7 @@ function formatReportDateRange(value: string) {
   const last = lastDateFromRange(value);
   if (!first && !last) return value;
   if (first && last && first !== last) {
-    return `${formatKoreanDate(first)} ~ ${formatKoreanDate(last)} (총 ${inclusiveDayCount(first, last)}일)`;
+    return `${formatKoreanDate(first)} ~ ${formatKoreanDate(last)} (\uCD1D ${inclusiveDayCount(first, last)}\uC77C)`;
   }
   return formatKoreanDate(first ?? last ?? value);
 }
@@ -1278,15 +1475,25 @@ function inclusiveDayCount(from: string, to: string) {
 function formatKoreanDateWithWeekday(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const weekdays = ["일", "월", "화", "수", "목", "금", "토"];
-  return `${date.getFullYear()}년 ${date.getMonth() + 1}월 ${date.getDate()}일 (${weekdays[date.getDay()]})`;
+  const weekdays = ["\uC77C", "\uC6D4", "\uD654", "\uC218", "\uBAA9", "\uAE08", "\uD1A0"];
+  return `${date.getFullYear()}\uB144 ${date.getMonth() + 1}\uC6D4 ${date.getDate()}\uC77C (${weekdays[date.getDay()]})`;
 }
 
-function wordTable(rows: string[][], options: { width: number; nested?: boolean }) {
+function wordTable(rows: string[][], options: { width: number; nested?: boolean; columnWidths?: number[] }) {
   const borders = options.nested
     ? '<w:tblBorders><w:top w:val="single" w:sz="4" w:color="D8E0EA"/><w:left w:val="single" w:sz="4" w:color="D8E0EA"/><w:bottom w:val="single" w:sz="4" w:color="D8E0EA"/><w:right w:val="single" w:sz="4" w:color="D8E0EA"/><w:insideH w:val="single" w:sz="4" w:color="D8E0EA"/><w:insideV w:val="single" w:sz="4" w:color="D8E0EA"/></w:tblBorders>'
     : '<w:tblBorders><w:top w:val="single" w:sz="6" w:color="CBD5E1"/><w:left w:val="single" w:sz="6" w:color="CBD5E1"/><w:bottom w:val="single" w:sz="6" w:color="CBD5E1"/><w:right w:val="single" w:sz="6" w:color="CBD5E1"/><w:insideH w:val="single" w:sz="4" w:color="CBD5E1"/><w:insideV w:val="single" w:sz="4" w:color="CBD5E1"/></w:tblBorders>';
-  return `<w:tbl><w:tblPr><w:tblW w:w="${options.width}" w:type="dxa"/><w:tblLayout w:type="fixed"/>${borders}<w:tblCellMar><w:top w:w="120" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tblCellMar></w:tblPr>${rows.map((row) => `<w:tr>${row.join("")}</w:tr>`).join("")}</w:tbl>`;
+  const grid = `<w:tblGrid>${tableColumnWidths(rows, options).map((width) => `<w:gridCol w:w="${width}"/>`).join("")}</w:tblGrid>`;
+  return `<w:tbl><w:tblPr><w:tblW w:w="${options.width}" w:type="dxa"/><w:tblLayout w:type="fixed"/>${borders}<w:tblCellMar><w:top w:w="120" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="120" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tblCellMar></w:tblPr>${grid}${rows.map((row) => `<w:tr>${row.join("")}</w:tr>`).join("")}</w:tbl>`;
+}
+
+function tableColumnWidths(rows: string[][], options: { width: number; columnWidths?: number[] }) {
+  if (options.columnWidths?.length) return options.columnWidths;
+  const columnCount = Math.max(1, ...rows.map((row) => row.length));
+  const baseWidth = Math.floor(options.width / columnCount);
+  return Array.from({ length: columnCount }, (_value, index) => index === columnCount - 1
+    ? options.width - baseWidth * (columnCount - 1)
+    : baseWidth);
 }
 
 function wordTextCell(text: string, width: number, options: WordTextOptions = {}) {

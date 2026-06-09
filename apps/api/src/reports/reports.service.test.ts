@@ -278,7 +278,23 @@ async function testExportDocxUsesWordTemplateAndEmbedsPhotos() {
     },
     generatedReport: {
       async findUnique() {
-        return reportFixture();
+        const fixture = reportFixture();
+        const content = fixture.content as { work_log?: unknown; judgment?: unknown };
+        content.work_log = [
+          {
+            photo_id: "photo-1",
+            date: "2026-06-04",
+            work_item: "\uBC14\uB2E5 / \uC5D0\uD3ED\uC2DC \uD504\uB77C\uC774\uBA38 \uB3C4\uD3EC",
+            work_detail: "\uBC14\uB2E5\uBA74\uC5D0 \uC5D0\uD3ED\uC2DC \uD504\uB77C\uC774\uBA38\uB97C \uB3C4\uD3EC\uD558\uACE0 \uD6C4\uC18D \uB77C\uC774\uB2DD \uC791\uC5C5 \uAE30\uBC18\uC744 \uD655\uBCF4\uD588\uC2B5\uB2C8\uB2E4.",
+            note: "\uB3C4\uD3EC \uD6C4 \uAC74\uC870 \uC2DC\uAC04\uACFC \uC811\uCC29 \uC0C1\uD0DC\uB97C \uD655\uC778\uD574\uC57C \uD569\uB2C8\uB2E4."
+          }
+        ];
+        content.judgment = {
+          quality_status: "\uC791\uC5C5\uC790 \uC785\uB825\uACFC \uC0AC\uC9C4 \uADFC\uAC70\uB97C \uC885\uD569\uD558\uBA74 \uD504\uB77C\uC774\uBA38 \uB3C4\uD3EC\uAC00 \uC815\uC0C1\uC801\uC73C\uB85C \uC9C4\uD589\uB41C \uAC83\uC73C\uB85C \uD310\uB2E8\uB429\uB2C8\uB2E4.",
+          special_notes: "\uD6C4\uC18D \uB77C\uC774\uB2DD \uC804 \uBBF8\uAC74\uC870 \uAD6C\uAC04\uACFC \uC774\uBB3C\uC9C8 \uC794\uB958 \uC5EC\uBD80\uB97C \uC810\uAC80\uD569\uB2C8\uB2E4.",
+          overall_opinion: "\uBC14\uD0D5\uBA74 \uC900\uBE44 \uC774\uD6C4 \uD504\uB77C\uC774\uBA38 \uB3C4\uD3EC\uB85C \uC5D0\uD3ED\uC2DC \uC2DC\uACF5 \uCD08\uAE30 \uB2E8\uACC4\uAC00 \uC21C\uCC28\uC801\uC73C\uB85C \uC774\uB8E8\uC5B4\uC9C4 \uAC83\uC73C\uB85C \uBCF4\uC785\uB2C8\uB2E4."
+        };
+        return fixture;
       }
     },
     user: {
@@ -303,10 +319,12 @@ async function testExportDocxUsesWordTemplateAndEmbedsPhotos() {
   const relsXml = zipEntryText(entries, "word/_rels/document.xml.rels");
 
   assert.equal(exported.filename, "주간 보고서.docx");
-  assert.match(documentXml, /시공일지/);
-  assert.match(documentXml, /시공 현장 사진/);
-  assert.match(documentXml, /101 회의실/);
-  assert.match(documentXml, /긴 설명 텍스트/);
+  assert.match(documentXml, /\uC2DC\uACF5\uC77C\uC9C0/);
+  assert.match(documentXml, /\uC2DC\uACF5 \uD604\uC7A5 \uC0AC\uC9C4/);
+  assert.match(documentXml, /\uBC14\uB2E5 \/ \uC5D0\uD3ED\uC2DC \uD504\uB77C\uC774\uBA38 \uB3C4\uD3EC/);
+  assert.match(documentXml, /\uB3C4\uD3EC \uD6C4 \uAC74\uC870 \uC2DC\uAC04/);
+  assert.doesNotMatch(documentXml, /\uC791\uC131\uC790:/);
+  assert.match(documentXml, /<w:tblGrid>/);
   assert.match(documentXml, /r:embed="rIdPhoto1"/);
   assertWellFormedXml(documentXml);
   assert.match(relsXml, /Target="media\/report-photo-1\.png"/);
@@ -345,6 +363,7 @@ async function testExportDocxFallsBackToTextWhenPhotoDownloadFails() {
   assert.equal(entries.some((entry) => entry.path === "word/media/report-photo-1.png"), false);
   assert.match(documentXml, /\[ 사진 첨부 \]/);
   assert.match(documentXml, /긴 설명 텍스트/);
+  assert.match(documentXml, /<w:tblGrid>/);
   assertWellFormedXml(documentXml);
 }
 
@@ -382,6 +401,7 @@ async function testExportDocxKeepsAllReportPhotos() {
   const relsXml = zipEntryText(entries, "word/_rels/document.xml.rels");
 
   assertWellFormedXml(documentXml);
+  assert.match(documentXml, /<w:tblGrid>/);
   for (let index = 1; index <= 8; index += 1) {
     assert.match(documentXml, new RegExp(`r:embed="rIdPhoto${index}"`));
     assert.match(relsXml, new RegExp(`Target="media/report-photo-${index}\\.png"`));

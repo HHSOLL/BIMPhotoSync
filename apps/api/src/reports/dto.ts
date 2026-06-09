@@ -60,8 +60,8 @@ export class GenerateReportDto {
   ai_prompt?: string;
 
   @IsOptional()
-  @IsIn(["GEMINI", "ANTHROPIC"])
-  model_provider?: "GEMINI" | "ANTHROPIC";
+  @IsIn(["GEMINI", "OPENAI", "ANTHROPIC"])
+  model_provider?: "GEMINI" | "OPENAI" | "ANTHROPIC";
 }
 
 export class ReportChatDto {
